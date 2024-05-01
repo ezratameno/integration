@@ -8,6 +8,7 @@ import (
 
 	giteasdk "code.gitea.io/sdk/gitea"
 
+	"github.com/ezratameno/integration/pkg/flux"
 	"github.com/ezratameno/integration/pkg/gitea"
 	"github.com/ezratameno/integration/pkg/kind"
 )
@@ -23,6 +24,7 @@ func main() {
 func run() error {
 
 	// TODO: we need to start the docker container
+
 	giteaOpts := gitea.Opts{
 		Addr:     "http://localhost",
 		SSHPort:  2222,
@@ -30,20 +32,27 @@ func run() error {
 	}
 	client := gitea.NewClient(giteaOpts)
 
-	err := client.Start(context.Background())
+	signUpOpts := gitea.SignUpOpts{
+		Email:    "admin@gmail.com",
+		Password: "adminlabuser",
+		Username: "labuser",
+	}
+	err := client.Start(context.Background(), signUpOpts)
 	if err != nil {
 		return err
 	}
 
-	pubKey, err := client.GeneratePrivatePublicKeys("test", "/tmp/gitea-key.pem")
+	privateKeyPath := "/tmp/gitea-key.pem"
+	pubKey, err := client.GeneratePrivatePublicKeys("test", privateKeyPath)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println(pubKey.ID)
 
+	repoName := "test"
 	repoOpts := giteasdk.CreateRepoOption{
-		Name:       "test",
+		Name:       repoName,
 		TrustModel: giteasdk.TrustModelCollaboratorCommitter,
 	}
 	_, err = client.CreateRepoFromExisting(repoOpts, "/home/ezra/Desktop/k8s-flux")
@@ -66,6 +75,26 @@ func run() error {
 
 	defer kindClient.DeleteCluster(clusterName)
 
-	time.Sleep(1 * time.Minute)
+	// Flux
+
+	fluxOpts := flux.Opts{
+		PrivateKeyPath: privateKeyPath,
+		Branch:         "main",
+		Path:           "flux",
+		Password:       signUpOpts.Password,
+		Username:       signUpOpts.Username,
+		Url:            fmt.Sprintf("localhost:%d/%s/%s.git", giteaOpts.SSHPort, signUpOpts.Username, repoName),
+	}
+
+	fluxClient, err := flux.NewClient(fluxOpts)
+	if err != nil {
+		return err
+	}
+
+	err = fluxClient.Bootstrap(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to bootstrap: %w", err)
+	}
+	time.Sleep(10 * time.Minute)
 	return nil
 }

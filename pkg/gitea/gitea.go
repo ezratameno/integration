@@ -58,17 +58,12 @@ type SignUpOpts struct {
 	Username string
 }
 
-func (c *Client) Start(ctx context.Context) error {
+func (c *Client) Start(ctx context.Context, signupOpts SignUpOpts) error {
 
 	// TODO: 1. install gitea (docker + actual installment)
 
 	// 2. sign up, the first user that signs up is admin
 
-	signupOpts := SignUpOpts{
-		Email:    "admin@gmail.com",
-		Password: "adminlabuser",
-		Username: "labuser",
-	}
 	err := c.Signup(ctx, signupOpts)
 	if err != nil {
 		return fmt.Errorf("failed signing user: %w", err)
