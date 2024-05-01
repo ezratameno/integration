@@ -207,6 +207,10 @@ func (c *Client) CreateRepoFromExisting(filesLocation string) (*gitea.Repository
 	// Copy all the files from the location to the gitea repo
 	err = filepath.WalkDir(filesLocation, func(path string, d fs.DirEntry, err error) error {
 
+		if err != nil {
+			return err
+		}
+
 		if d.IsDir() {
 			return nil
 		}
