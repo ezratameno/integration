@@ -193,13 +193,9 @@ func (c *Client) GeneratePrivatePublicKeys(publicKeyName string, privateKeyPath 
 }
 
 // CreateRepoFromExisting creates a repo and copies all the files from the location
-func (c *Client) CreateRepoFromExisting(filesLocation string) (*gitea.Repository, error) {
+func (c *Client) CreateRepoFromExisting(opts gitea.CreateRepoOption, filesLocation string) (*gitea.Repository, error) {
 
-	repo, _, err := c.client.CreateRepo(gitea.CreateRepoOption{
-		Name:       "test",
-		Private:    false,
-		TrustModel: gitea.TrustModelCollaboratorCommitter,
-	})
+	repo, _, err := c.client.CreateRepo(opts)
 	if err != nil {
 		return nil, err
 	}

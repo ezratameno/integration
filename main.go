@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
+
+	giteasdk "code.gitea.io/sdk/gitea"
 
 	"github.com/ezratameno/integration/pkg/gitea"
+	"github.com/ezratameno/integration/pkg/kind"
 )
 
 func main() {
@@ -19,12 +23,12 @@ func main() {
 func run() error {
 
 	// TODO: we need to start the docker container
-	opts := gitea.Opts{
+	giteaOpts := gitea.Opts{
 		Addr:     "http://localhost",
 		SSHPort:  2222,
 		HttpPort: 3000,
 	}
-	client := gitea.NewClient(opts)
+	client := gitea.NewClient(giteaOpts)
 
 	err := client.Start(context.Background())
 	if err != nil {
@@ -38,9 +42,30 @@ func run() error {
 
 	fmt.Println(pubKey.ID)
 
-	_, err = client.CreateRepoFromExisting("/home/ezra/Desktop/integration")
+	repoOpts := giteasdk.CreateRepoOption{
+		Name:       "test",
+		TrustModel: giteasdk.TrustModelCollaboratorCommitter,
+	}
+	_, err = client.CreateRepoFromExisting(repoOpts, "/home/ezra/Desktop/k8s-flux")
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("finish gitea flow")
+	// Start kind cluster
+
+	kindClient := kind.NewClient()
+
+	clusterName := "integration"
+	err = kindClient.CreateClusterWithConfig(clusterName, "kind/kind-multinode.yaml")
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("created cluster!")
+
+	defer kindClient.DeleteCluster(clusterName)
+
+	time.Sleep(1 * time.Minute)
 	return nil
 }
