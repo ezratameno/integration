@@ -30,5 +30,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	pubKey, err := client.GeneratePrivatePublicKeys("test", "/tmp/gitea-key.pem")
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(pubKey.ID)
 	return nil
 }

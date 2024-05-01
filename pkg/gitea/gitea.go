@@ -3,11 +3,18 @@ package gitea
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+
+	"code.gitea.io/sdk/gitea"
 )
 
 type Opts struct {
@@ -21,8 +28,9 @@ type Opts struct {
 }
 
 type Client struct {
-	opts Opts
-	do   *http.Client
+	opts   Opts
+	do     *http.Client
+	client *gitea.Client
 }
 
 func NewClient(opts Opts) *Client {
@@ -66,6 +74,16 @@ func (c *Client) Start(ctx context.Context) error {
 	c.opts.adminEmail = signupOpts.Email
 	c.opts.adminUser = signupOpts.Username
 	c.opts.adminPassword = signupOpts.Password
+
+	// TODO: create gitea client
+
+	client, err := gitea.NewClient(fmt.Sprintf("%s:%d", c.opts.Addr, c.opts.HttpPort),
+		gitea.SetBasicAuth(c.opts.adminUser, c.opts.adminPassword))
+	if err != nil {
+		return fmt.Errorf("failed to create gitea client: %w", err)
+	}
+
+	c.client = client
 
 	return nil
 }
@@ -115,4 +133,57 @@ func (c *Client) Signup(ctx context.Context, opts SignUpOpts) error {
 	}
 
 	return nil
+}
+
+// GeneratePrivatePublicKeys will generate a public and private key in gitea.
+// the user will pass the path to where to save the private key.
+func (c *Client) GeneratePrivatePublicKeys(publicKeyName string, privateKeyPath string) (*gitea.PublicKey, error) {
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 3071)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate private key: %w", err)
+	}
+
+	// Extract the public key from the private key
+	publicKey := privateKey.Public()
+
+	// Convert the public key
+	publicKeyBytes, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// Encode the public key to Pem format
+	publicKeyPem := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PUBLIC KEY",
+		Bytes: publicKeyBytes,
+	})
+
+	// Create public key in gitea
+	pubKey, _, err := c.client.CreatePublicKey(gitea.CreateKeyOption{
+		Title: publicKeyName,
+		Key:   string(publicKeyPem),
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO: do i need to supply a function that delete the key in case of failure?
+
+	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+
+	// Encode the public key to PEM format
+	privateKeyPem := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: privateKeyBytes,
+	})
+
+	// Save the private key to file
+	err = os.WriteFile(privateKeyPath, privateKeyPem, 0744)
+	if err != nil {
+		return pubKey, fmt.Errorf("failed to save private key to file: %w", err)
+	}
+
+	return pubKey, nil
 }
