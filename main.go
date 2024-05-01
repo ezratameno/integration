@@ -37,5 +37,10 @@ func run() error {
 	}
 
 	fmt.Println(pubKey.ID)
+
+	_, err = client.CreateRepoFromExisting("/home/ezra/Desktop/integration")
+	if err != nil {
+		return err
+	}
 	return nil
 }

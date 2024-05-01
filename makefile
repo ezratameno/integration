@@ -4,5 +4,6 @@ docker-run:
 docker-remove:
 	docker container rm -f gitea
 
+docker-restart: docker-remove docker-run
 tidy:
 	go mod tidy

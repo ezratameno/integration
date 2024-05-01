@@ -7,12 +7,16 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"code.gitea.io/sdk/gitea"
 )
@@ -186,4 +190,54 @@ func (c *Client) GeneratePrivatePublicKeys(publicKeyName string, privateKeyPath 
 	}
 
 	return pubKey, nil
+}
+
+// CreateRepoFromExisting creates a repo and copies all the files from the location
+func (c *Client) CreateRepoFromExisting(filesLocation string) (*gitea.Repository, error) {
+
+	repo, _, err := c.client.CreateRepo(gitea.CreateRepoOption{
+		Name:       "test",
+		Private:    false,
+		TrustModel: gitea.TrustModelCollaboratorCommitter,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Copy all the files from the location to the gitea repo
+	err = filepath.WalkDir(filesLocation, func(path string, d fs.DirEntry, err error) error {
+
+		if d.IsDir() {
+			return nil
+		}
+
+		// skip on .git files
+		if strings.Contains(path, ".git") {
+			return nil
+		}
+
+		fmt.Println("path", path)
+
+		fileLoc := strings.TrimPrefix(path+"/", filesLocation)
+
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, _, err = c.client.CreateFile(c.opts.adminUser, repo.Name, fileLoc, gitea.CreateFileOptions{
+			Content: base64.StdEncoding.EncodeToString(body),
+		})
+
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, nil
 }
