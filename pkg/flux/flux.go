@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -18,22 +17,30 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-type Opts struct {
+type Client struct {
+	kubeClient client.Client
+}
+
+func NewClient() (*Client, error) {
+
+	c := &Client{}
+
+	return c, nil
+}
+
+type BootstrapOpts struct {
 	PrivateKeyPath string
 	Branch         string
 	Path           string
 	Password       string
 	Username       string
 	Url            string
+
+	// url to update the gitrepo object
+	GitRepoUrl string
 }
 
-type Client struct {
-	opts       Opts
-	kubeClient client.Client
-}
-
-func NewClient(opts Opts) (*Client, error) {
-
+func (c *Client) Initialize() error {
 	// register the GitOps Toolkit schema definitions
 	scheme := runtime.NewScheme()
 	_ = sourcev1.AddToScheme(scheme)
@@ -42,22 +49,20 @@ func NewClient(opts Opts) (*Client, error) {
 	// init Kubernetes client
 	kubeClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
-		return nil, nil
-	}
-
-	c := &Client{
-		opts: opts,
+		return err
 	}
 
 	c.kubeClient = kubeClient
-
-	return c, nil
+	return nil
 }
+func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 
-func (c *Client) Bootstrap(ctx context.Context) error {
-
+	err := c.Initialize()
+	if err != nil {
+		return err
+	}
 	cmd := fmt.Sprintf(`flux bootstrap git --url="ssh://git@%s" --branch="%s" --private-key-file="%s" --path="%s" --password="%s" --username="%s" --token-auth=true`,
-		c.opts.Url, c.opts.Branch, c.opts.PrivateKeyPath, c.opts.Path, c.opts.Password, c.opts.Username)
+		opts.Url, opts.Branch, opts.PrivateKeyPath, opts.Path, opts.Password, opts.Username)
 
 	fmt.Println(cmd)
 
@@ -68,7 +73,7 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 	defer cancel()
 
 	// TODO: handle better
-	err := exec.LocalExecContext(cmdCtx, cmd, &buf)
+	err = exec.LocalExecContext(cmdCtx, cmd, &buf)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -80,13 +85,8 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 		Name:      "flux-system",
 	}, gitRepo)
 
-	ip, err := GetOutboundIP()
-	if err != nil {
-		return err
-	}
-
-	// TODO: improve this
-	gitRepo.Spec.URL = fmt.Sprintf("http://%s:3000/labuser/test.git", ip.String())
+	// TODO: improve this, maybe it's too specific?
+	gitRepo.Spec.URL = opts.GitRepoUrl
 
 	fmt.Println("url", gitRepo.Spec.URL)
 
@@ -98,17 +98,4 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 	// TODO: make sure all kustomizations are running ok? (reconcile?)
 
 	return nil
-}
-
-// Get preferred outbound ip of this machine
-func GetOutboundIP() (net.IP, error) {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-
-	return localAddr.IP, nil
 }
