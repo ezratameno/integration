@@ -131,10 +131,12 @@ func (c *Client) StartIntegration(ctx context.Context) error {
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	err := c.SetUpGitea(ctx)
+	containerName, err := c.SetUpGitea(ctx)
 	if err != nil {
+		defer gitea.Close(containerName)
 		return fmt.Errorf("failed to set up gitea: %w", err)
 	}
+	defer gitea.Close(containerName)
 
 	fmt.Println("set up gitea done")
 
@@ -149,7 +151,7 @@ func (c *Client) StartIntegration(ctx context.Context) error {
 
 	// Bootstrap
 
-	ip, err := GetOutboundIP()
+	ip, err := getOutboundIP()
 	if err != nil {
 		return err
 	}
@@ -178,7 +180,7 @@ func (c *Client) StartIntegration(ctx context.Context) error {
 }
 
 // TODO: do i need to delete the gitea container if the operation failed?
-func (c *Client) SetUpGitea(ctx context.Context) error {
+func (c *Client) SetUpGitea(ctx context.Context) (string, error) {
 
 	signUpOpts := gitea.SignUpOpts{
 		Email:    fmt.Sprintf("%s@gmail.com", c.opts.GiteaUsername),
@@ -187,14 +189,14 @@ func (c *Client) SetUpGitea(ctx context.Context) error {
 	}
 
 	// Start github
-	err := c.giteaClient.Start(ctx, signUpOpts)
+	containerName, err := c.giteaClient.Start(ctx, signUpOpts)
 	if err != nil {
-		return fmt.Errorf("failed to start gitea: %w", err)
+		return containerName, fmt.Errorf("failed to start gitea: %w", err)
 	}
 
-	_, err = c.giteaClient.GeneratePrivatePublicKeys("test", c.opts.PrivateKeyPath)
+	_, err = c.giteaClient.GeneratePrivatePublicKeys(c.opts.GiteaRepoName, c.opts.PrivateKeyPath)
 	if err != nil {
-		return fmt.Errorf("failed to generate public and private keys: %w", err)
+		return containerName, fmt.Errorf("failed to generate public and private keys: %w", err)
 	}
 
 	repoOpts := giteasdk.CreateRepoOption{
@@ -204,8 +206,8 @@ func (c *Client) SetUpGitea(ctx context.Context) error {
 
 	_, err = c.giteaClient.CreateRepoFromExisting(repoOpts, c.opts.GiteaLocalRepoPath)
 	if err != nil {
-		return fmt.Errorf("failed to create gitea repo with local repo files: %w", err)
+		return containerName, fmt.Errorf("failed to create gitea repo with local repo files: %w", err)
 	}
 
-	return nil
+	return containerName, nil
 }

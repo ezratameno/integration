@@ -17,8 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"code.gitea.io/sdk/gitea"
+	"github.com/ezratameno/integration/pkg/exec"
 )
 
 type Opts struct {
@@ -58,15 +60,30 @@ type SignUpOpts struct {
 	Username string
 }
 
-func (c *Client) Start(ctx context.Context, signupOpts SignUpOpts) error {
+func (c *Client) Start(ctx context.Context, signupOpts SignUpOpts) (string, error) {
 
-	// TODO: 1. install gitea (docker + actual installment)
+	// TODO: install gitea (docker + actual installment)
+
+	containerName := fmt.Sprintf("gitea-%s", randomString(4))
+	var buf bytes.Buffer
+
+	// GITEA__security__INSTALL_LOCK=true skip on the installation page
+	cmd := fmt.Sprintf("docker run -d -p %d:3000 -p %d:22 -e GITEA__security__INSTALL_LOCK=true --name %s  gitea/gitea:1.21.7", c.opts.HttpPort, c.opts.SSHPort, containerName)
+	err := exec.LocalExecContext(ctx, cmd, &buf)
+	if err != nil {
+		return containerName, fmt.Errorf("failed to create container: %s %w", buf.String(), err)
+	}
+
+	fmt.Println("start container")
 
 	// 2. sign up, the first user that signs up is admin
 
-	err := c.Signup(ctx, signupOpts)
+	// give time for the gitea to start
+	time.Sleep(10 * time.Second)
+
+	err = c.Signup(ctx, signupOpts)
 	if err != nil {
-		return fmt.Errorf("failed signing user: %w", err)
+		return containerName, fmt.Errorf("failed signing user: %w", err)
 	}
 
 	// Set up admin information
@@ -79,14 +96,23 @@ func (c *Client) Start(ctx context.Context, signupOpts SignUpOpts) error {
 	client, err := gitea.NewClient(fmt.Sprintf("%s:%d", c.opts.Addr, c.opts.HttpPort),
 		gitea.SetBasicAuth(c.opts.adminUser, c.opts.adminPassword))
 	if err != nil {
-		return fmt.Errorf("failed to create gitea client: %w", err)
+		return containerName, fmt.Errorf("failed to create gitea client: %w", err)
 	}
 
 	c.client = client
 
-	return nil
+	return containerName, nil
 }
 
+func Close(containerName string) error {
+	var buf bytes.Buffer
+	cmd := fmt.Sprintf("docker container rm -f %s", containerName)
+	err := exec.LocalExecContext(context.TODO(), cmd, &buf)
+	if err != nil {
+		return fmt.Errorf("failed to delete container: %s %w", buf.String(), err)
+	}
+	return nil
+}
 func (c *Client) Signup(ctx context.Context, opts SignUpOpts) error {
 
 	signUpurl := fmt.Sprintf("%s:%d/user/sign_up", c.opts.Addr, c.opts.HttpPort)

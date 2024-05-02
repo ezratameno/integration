@@ -26,6 +26,7 @@ func run() error {
 		GiteaRepoName:      "ezra",
 		GiteaLocalRepoPath: "/home/ezra/Desktop/k8s-flux",
 		FluxPath:           "flux",
+		KindConfigPath:     "kind/kind-multinode.yaml",
 	}
 
 	client, err := integration.NewClient(opts)
