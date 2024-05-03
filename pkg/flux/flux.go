@@ -78,6 +78,9 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 		fmt.Println(err)
 	}
 
+	// TODO: read from buffer until i get some string that indicate that resource was created
+	// waiting for GitRepository "flux-system/flux-system" to be reconciled
+
 	// Update the url
 	gitRepo := &sourcev1.GitRepository{}
 	c.kubeClient.Get(ctx, types.NamespacedName{

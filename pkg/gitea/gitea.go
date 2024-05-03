@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -79,6 +80,8 @@ func (c *Client) Start(ctx context.Context, signupOpts SignUpOpts) (string, erro
 	// 2. sign up, the first user that signs up is admin
 
 	// give time for the gitea to start
+
+	// TODO: check for a better way
 	time.Sleep(10 * time.Second)
 
 	err = c.Signup(ctx, signupOpts)
@@ -90,8 +93,6 @@ func (c *Client) Start(ctx context.Context, signupOpts SignUpOpts) (string, erro
 	c.opts.adminEmail = signupOpts.Email
 	c.opts.adminUser = signupOpts.Username
 	c.opts.adminPassword = signupOpts.Password
-
-	// TODO: create gitea client
 
 	client, err := gitea.NewClient(fmt.Sprintf("%s:%d", c.opts.Addr, c.opts.HttpPort),
 		gitea.SetBasicAuth(c.opts.adminUser, c.opts.adminPassword))
@@ -113,6 +114,7 @@ func Close(containerName string) error {
 	}
 	return nil
 }
+
 func (c *Client) Signup(ctx context.Context, opts SignUpOpts) error {
 
 	signUpurl := fmt.Sprintf("%s:%d/user/sign_up", c.opts.Addr, c.opts.HttpPort)
@@ -221,6 +223,8 @@ func (c *Client) CreateRepoFromExisting(opts gitea.CreateRepoOption, filesLocati
 		return nil, err
 	}
 
+	var createOpts CreateMultiFiles
+
 	// Copy all the files from the location to the gitea repo
 	err = filepath.WalkDir(filesLocation, func(path string, d fs.DirEntry, err error) error {
 
@@ -237,21 +241,24 @@ func (c *Client) CreateRepoFromExisting(opts gitea.CreateRepoOption, filesLocati
 			return nil
 		}
 
+		if strings.Contains(path, "vendor") {
+			return nil
+		}
+
 		fmt.Println("path", path)
 
-		fileLoc := strings.TrimPrefix(path+"/", filesLocation)
+		fileLoc := strings.TrimPrefix(path, filesLocation+"/")
 
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		_, _, err = c.client.CreateFile(c.opts.adminUser, repo.Name, fileLoc, gitea.CreateFileOptions{
-			Content: base64.StdEncoding.EncodeToString(body),
-		})
 
-		if err != nil {
-			return err
-		}
+		createOpts.Files = append(createOpts.Files, File{
+			Content:   base64.StdEncoding.EncodeToString(body),
+			Operation: operationCreate,
+			Path:      fileLoc,
+		})
 
 		return nil
 	})
@@ -260,5 +267,68 @@ func (c *Client) CreateRepoFromExisting(opts gitea.CreateRepoOption, filesLocati
 		return nil, err
 	}
 
+	err = c.CreateMultiFiles(context.Background(), createOpts, c.opts.adminUser, repo.Name)
+	if err != nil {
+		return nil, err
+	}
+
 	return nil, nil
+}
+
+type CreateMultiFiles struct {
+	gitea.FileOptions
+	Files []File `json:"files"`
+}
+
+type File struct {
+	Content string `json:"content"`
+
+	Operation string `json:"operation"`
+
+	// path to the existing or new file
+	Path string `json:"path"`
+
+	// sha is the SHA for the file that already exists, required for update or delete
+	Sha string `json:"sha"`
+}
+
+const (
+	operationCreate = "create"
+	operationDelete = "delete"
+	operationUpdate = "update"
+)
+
+func (c *Client) CreateMultiFiles(ctx context.Context, opts CreateMultiFiles, owner, repo string) error {
+
+	url := fmt.Sprintf("%s:%d/api/v1/repos/%s/%s/contents", c.opts.Addr, c.opts.HttpPort, owner, repo)
+
+	fmt.Println("url", url)
+	body, err := json.Marshal(opts)
+	if err != nil {
+		return err
+	}
+
+	// fmt.Println(string(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+
+	req.SetBasicAuth(c.opts.adminUser, c.opts.adminPassword)
+	req.Header.Set("content-type", "application/json")
+	resp, err := c.do.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("status code %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
 }
