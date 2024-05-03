@@ -165,6 +165,7 @@ func (c *Client) StartIntegration(ctx context.Context) error {
 		Url:            fmt.Sprintf("localhost:%d/%s/%s.git", c.opts.GiteaSshPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
 		GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), c.opts.GiteaHttpPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
 	}
+
 	err = c.fluxClient.Bootstrap(ctx, bootstrapOpts)
 	if err != nil {
 		return fmt.Errorf("failed to bootstrap: %w", err)

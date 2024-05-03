@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -55,6 +56,7 @@ func (c *Client) Initialize() error {
 	c.kubeClient = kubeClient
 	return nil
 }
+
 func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 
 	err := c.Initialize()
@@ -69,13 +71,34 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	// Bootstrap flux
 	var buf bytes.Buffer
 
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	cmdCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// wait until the git repo is created
+	go func() {
+
+		defer cancel()
+		for {
+			time.Sleep(1 * time.Second)
+
+			s := buf.String()
+
+			if len(s) == 0 {
+				continue
+			}
+
+			// fmt.Println(s)
+
+			if strings.Contains(s, `waiting for GitRepository "flux-system/flux-system" to be reconciled`) {
+				return
+			}
+
+		}
+	}()
 	// TODO: handle better
 	err = exec.LocalExecContext(cmdCtx, cmd, &buf)
-	if err != nil {
-		fmt.Println(err)
+	if err != nil && !strings.Contains(err.Error(), "signal: killed") {
+		return err
 	}
 
 	// TODO: read from buffer until i get some string that indicate that resource was created
