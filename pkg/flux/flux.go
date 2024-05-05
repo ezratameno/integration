@@ -12,10 +12,13 @@ import (
 
 	"github.com/ezratameno/integration/pkg/exec"
 	helmv2 "github.com/fluxcd/helm-controller/api/v2beta2"
+	apimeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 type Client struct {
@@ -87,9 +90,9 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 				continue
 			}
 
-			// fmt.Println(s)
+			fmt.Println(s)
 
-			if strings.Contains(s, `waiting for GitRepository "flux-system/flux-system" to be reconciled`) {
+			if strings.Contains(s, `reconciled sync configuration`) {
 				return
 			}
 
@@ -104,6 +107,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	// TODO: read from buffer until i get some string that indicate that resource was created
 	// waiting for GitRepository "flux-system/flux-system" to be reconciled
 
+	// TODO: maybe i need to use informers? or one time is enough?
 	// Update the url
 	gitRepo := &sourcev1.GitRepository{}
 	c.kubeClient.Get(ctx, types.NamespacedName{
@@ -119,6 +123,27 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	err = c.kubeClient.Patch(ctx, gitRepo, client.Merge, &client.PatchOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to patch changes: %w", err)
+	}
+
+	// TODO: wait until git repo is in status ready
+
+	// wait for the a Helm release to be reconciled
+	fmt.Println("Waiting for git repo to be ready")
+	err = wait.PollUntilContextCancel(ctx, 2*time.Second, true,
+		func(ctx context.Context) (done bool, err error) {
+
+			namespacedName := types.NamespacedName{
+				Namespace: gitRepo.GetNamespace(),
+				Name:      gitRepo.GetName(),
+			}
+			if err := c.kubeClient.Get(ctx, namespacedName, gitRepo); err != nil {
+				return false, err
+			}
+			return meta.IsStatusConditionTrue(gitRepo.Status.Conditions, apimeta.ReadyCondition), nil
+		})
+
+	if err != nil {
+		return err
 	}
 
 	// TODO: make sure all kustomizations are running ok? (reconcile?)

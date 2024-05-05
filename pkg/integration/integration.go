@@ -205,7 +205,7 @@ func (c *Client) SetUpGitea(ctx context.Context) (string, error) {
 		TrustModel: giteasdk.TrustModelCollaboratorCommitter,
 	}
 
-	_, err = c.giteaClient.CreateRepoFromExisting(repoOpts, c.opts.GiteaLocalRepoPath)
+	_, err = c.giteaClient.CreateRepoFromExisting(ctx, repoOpts, c.opts.GiteaLocalRepoPath)
 	if err != nil {
 		return containerName, fmt.Errorf("failed to create gitea repo with local repo files: %w", err)
 	}

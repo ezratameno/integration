@@ -216,7 +216,7 @@ func (c *Client) GeneratePrivatePublicKeys(publicKeyName string, privateKeyPath 
 }
 
 // CreateRepoFromExisting creates a repo and copies all the files from the location
-func (c *Client) CreateRepoFromExisting(opts gitea.CreateRepoOption, filesLocation string) (*gitea.Repository, error) {
+func (c *Client) CreateRepoFromExisting(ctx context.Context, opts gitea.CreateRepoOption, filesLocation string) (*gitea.Repository, error) {
 
 	repo, _, err := c.client.CreateRepo(opts)
 	if err != nil {
@@ -245,12 +245,17 @@ func (c *Client) CreateRepoFromExisting(opts gitea.CreateRepoOption, filesLocati
 			return nil
 		}
 
-		fmt.Println("path", path)
+		// fmt.Println("path", path)
 
 		fileLoc := strings.TrimPrefix(path, filesLocation+"/")
 
 		body, err := os.ReadFile(path)
 		if err != nil {
+
+			if strings.Contains(err.Error(), "is a directory") {
+				fmt.Println(path)
+				return nil
+			}
 			return err
 		}
 
@@ -267,7 +272,8 @@ func (c *Client) CreateRepoFromExisting(opts gitea.CreateRepoOption, filesLocati
 		return nil, err
 	}
 
-	err = c.CreateMultiFiles(context.Background(), createOpts, c.opts.adminUser, repo.Name)
+	fmt.Println("uploading files to gitea")
+	err = c.CreateMultiFiles(ctx, createOpts, c.opts.adminUser, repo.Name)
 	if err != nil {
 		return nil, err
 	}
