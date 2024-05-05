@@ -146,6 +146,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	return nil
 }
 
+// WaitForKs wait for the kustomization to be ready
 func (c *Client) WaitForKs(ctx context.Context, name, namespace string) error {
 	err := wait.PollUntilContextCancel(ctx, 2*time.Second, true, func(ctx context.Context) (done bool, err error) {
 		namespacedName := types.NamespacedName{

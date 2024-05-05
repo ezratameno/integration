@@ -256,3 +256,7 @@ func (c *Client) SetUpGitea(ctx context.Context) (string, error) {
 
 	return containerName, nil
 }
+
+func (c *Client) WaitForKs(ctx context.Context, name, namespace string) error {
+	return c.fluxClient.WaitForKs(ctx, name, namespace)
+}
