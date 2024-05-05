@@ -12,9 +12,9 @@ import (
 
 	"github.com/ezratameno/integration/pkg/exec"
 	helmv2 "github.com/fluxcd/helm-controller/api/v2beta2"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	apimeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
-
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -138,6 +138,28 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 			}
 			return meta.IsStatusConditionTrue(gitRepo.Status.Conditions, apimeta.ReadyCondition), nil
 		})
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Client) WaitForKs(ctx context.Context, name, namespace string) error {
+	err := wait.PollUntilContextCancel(ctx, 2*time.Second, true, func(ctx context.Context) (done bool, err error) {
+		namespacedName := types.NamespacedName{
+			Namespace: namespace,
+			Name:      name,
+		}
+
+		var ks kustomizev1.Kustomization
+
+		if err := c.kubeClient.Get(ctx, namespacedName, &ks); err != nil {
+			return false, err
+		}
+		return meta.IsStatusConditionTrue(ks.Status.Conditions, apimeta.ReadyCondition), nil
+	})
 
 	if err != nil {
 		return err

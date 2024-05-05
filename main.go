@@ -50,7 +50,12 @@ func run() error {
 			}
 
 			fmt.Println(i.Msg)
+		case <-ctx.Done():
+
+			return ctx.Err()
+
 		}
+
 	}
 
 	// return nil
