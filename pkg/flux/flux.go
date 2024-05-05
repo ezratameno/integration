@@ -49,6 +49,7 @@ func (c *Client) Initialize() error {
 	scheme := runtime.NewScheme()
 	_ = sourcev1.AddToScheme(scheme)
 	_ = helmv2.AddToScheme(scheme)
+	_ = kustomizev1.AddToScheme(scheme)
 
 	// init Kubernetes client
 	kubeClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
