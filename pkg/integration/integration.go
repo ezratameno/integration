@@ -3,9 +3,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
 
 	giteasdk "code.gitea.io/sdk/gitea"
 	"github.com/ezratameno/integration/pkg/flux"
@@ -121,62 +118,109 @@ func NewClient(opts Opts) (*Client, error) {
 	return c, nil
 }
 
+type Info struct {
+	Err error
+	Msg Message
+}
+
+type Message int
+
+func (m Message) String() string {
+	switch m {
+	case MessageGiteaReady:
+		return "gitea is ready"
+	case MessageKindReady:
+		return "kind is ready"
+	case MessageFluxReady:
+		return "flux is ready"
+	default:
+		return fmt.Sprintf("%d", int(m))
+	}
+}
+
+const (
+	MessageUnknown Message = iota
+	MessageGiteaReady
+	MessageKindReady
+	MessageFluxReady
+)
+
 // TODO: maybe should return a chan that update on progress?
 // TODO: clean up once the context is done
 // TODO: do i want this to run in a goroutine?
-func (c *Client) StartIntegration(ctx context.Context) error {
+func (c *Client) StartIntegration(ctx context.Context) chan Info {
 
-	// TODO: catch signals
+	// ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	// defer cancel()
 
-	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	ch := make(chan Info)
 
-	containerName, err := c.SetUpGitea(ctx)
-	if err != nil {
+	go func() {
+		containerName, err := c.SetUpGitea(ctx)
+		if err != nil {
+			defer gitea.Close(containerName)
+			ch <- Info{
+				Err: fmt.Errorf("failed to set up gitea: %w", err),
+			}
+			return
+		}
 		defer gitea.Close(containerName)
-		return fmt.Errorf("failed to set up gitea: %w", err)
-	}
-	defer gitea.Close(containerName)
 
-	fmt.Println("set up gitea done")
+		ch <- Info{
+			Msg: MessageGiteaReady,
+		}
 
-	// Create cluster
-	err = c.kindClient.CreateClusterWithConfig(c.opts.KindClusterName, c.opts.KindConfigPath)
-	if err != nil {
-		return fmt.Errorf("failed to create kind cluster: %w", err)
-	}
-	defer c.kindClient.DeleteCluster(c.opts.KindClusterName)
+		// Create cluster
+		err = c.kindClient.CreateClusterWithConfig(c.opts.KindClusterName, c.opts.KindConfigPath)
+		if err != nil {
+			ch <- Info{
+				Err: fmt.Errorf("failed to create kind cluster: %w", err),
+			}
+			return
+		}
+		defer c.kindClient.DeleteCluster(c.opts.KindClusterName)
 
-	fmt.Println("set up kind done")
+		ch <- Info{
+			Msg: MessageKindReady,
+		}
 
-	// Bootstrap
+		// Bootstrap
 
-	ip, err := getOutboundIP()
-	if err != nil {
-		return err
-	}
+		ip, err := getOutboundIP()
+		if err != nil {
 
-	bootstrapOpts := flux.BootstrapOpts{
-		PrivateKeyPath: c.opts.PrivateKeyPath,
-		Branch:         "main",
-		Path:           c.opts.FluxPath,
-		Password:       c.opts.GiteaPassword,
-		Username:       c.opts.GiteaUsername,
-		Url:            fmt.Sprintf("localhost:%d/%s/%s.git", c.opts.GiteaSshPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
-		GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), c.opts.GiteaHttpPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
-	}
+			ch <- Info{
+				Err: err,
+			}
+			return
+		}
 
-	err = c.fluxClient.Bootstrap(ctx, bootstrapOpts)
-	if err != nil {
-		return fmt.Errorf("failed to bootstrap: %w", err)
-	}
+		bootstrapOpts := flux.BootstrapOpts{
+			PrivateKeyPath: c.opts.PrivateKeyPath,
+			Branch:         "main",
+			Path:           c.opts.FluxPath,
+			Password:       c.opts.GiteaPassword,
+			Username:       c.opts.GiteaUsername,
+			Url:            fmt.Sprintf("localhost:%d/%s/%s.git", c.opts.GiteaSshPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
+			GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), c.opts.GiteaHttpPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
+		}
 
-	fmt.Println("flux bootstrap is done")
+		err = c.fluxClient.Bootstrap(ctx, bootstrapOpts)
+		if err != nil {
+			ch <- Info{
+				Err: fmt.Errorf("failed to bootstrap: %w", err),
+			}
+			return
+		}
 
-	<-ctx.Done()
+		ch <- Info{
+			Msg: MessageFluxReady,
+		}
 
-	fmt.Println("done")
-	return nil
+		<-ctx.Done()
+	}()
+
+	return ch
 
 }
 

@@ -252,8 +252,9 @@ func (c *Client) CreateRepoFromExisting(ctx context.Context, opts gitea.CreateRe
 		body, err := os.ReadFile(path)
 		if err != nil {
 
+			// We do this for links
 			if strings.Contains(err.Error(), "is a directory") {
-				fmt.Println(path)
+				// fmt.Println(path)
 				return nil
 			}
 			return err

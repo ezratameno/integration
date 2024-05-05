@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/ezratameno/integration/pkg/integration"
 )
@@ -20,13 +22,17 @@ func run() error {
 
 	// TODO: we need to start the docker container
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	opts := integration.Opts{
 		GiteaSshPort:       2222,
 		GiteaHttpPort:      3000,
 		GiteaRepoName:      "ezra",
-		GiteaLocalRepoPath: "/home/ezra/Desktop/k8s-flux",
-		FluxPath:           "flux",
-		KindConfigPath:     "kind/kind-multinode.yaml",
+		GiteaLocalRepoPath: "/home/etameno/etameno/Desktop/github/habana-k8s-infra-services",
+		FluxPath:           "flux/clusters/dc02",
+		KindConfigPath:     "/home/etameno/etameno/Desktop/github/habana-k8s-infra-services/test/kind-cluster/kind-cluster.yaml",
+		KindClusterName:    "test2",
 	}
 
 	client, err := integration.NewClient(opts)
@@ -34,9 +40,18 @@ func run() error {
 		return err
 	}
 
-	err = client.StartIntegration(context.Background())
-	if err != nil {
-		return err
+	ch := client.StartIntegration(ctx)
+
+	for {
+		select {
+		case i := <-ch:
+			if i.Err != nil {
+				return i.Err
+			}
+
+			fmt.Println(i.Msg)
+		}
 	}
-	return nil
+
+	// return nil
 }

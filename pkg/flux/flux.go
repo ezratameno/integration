@@ -69,7 +69,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	cmd := fmt.Sprintf(`flux bootstrap git --url="ssh://git@%s" --branch="%s" --private-key-file="%s" --path="%s" --password="%s" --username="%s" --token-auth=true`,
 		opts.Url, opts.Branch, opts.PrivateKeyPath, opts.Path, opts.Password, opts.Username)
 
-	fmt.Println(cmd)
+	// fmt.Println(cmd)
 
 	// Bootstrap flux
 	var buf bytes.Buffer
@@ -77,7 +77,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	cmdCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// wait until the git repo is created
+	// Read from buffer until i get some string that indicate that resource was created
 	go func() {
 
 		defer cancel()
@@ -98,14 +98,12 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 
 		}
 	}()
+
 	// TODO: handle better
 	err = exec.LocalExecContext(cmdCtx, cmd, &buf)
 	if err != nil && !strings.Contains(err.Error(), "signal: killed") {
 		return err
 	}
-
-	// TODO: read from buffer until i get some string that indicate that resource was created
-	// waiting for GitRepository "flux-system/flux-system" to be reconciled
 
 	// TODO: maybe i need to use informers? or one time is enough?
 	// Update the url
@@ -125,9 +123,8 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 		return fmt.Errorf("failed to patch changes: %w", err)
 	}
 
-	// TODO: wait until git repo is in status ready
+	// Wait until git repo is in status ready
 
-	// wait for the a Helm release to be reconciled
 	fmt.Println("Waiting for git repo to be ready")
 	err = wait.PollUntilContextCancel(ctx, 2*time.Second, true,
 		func(ctx context.Context) (done bool, err error) {
@@ -145,8 +142,6 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	if err != nil {
 		return err
 	}
-
-	// TODO: make sure all kustomizations are running ok? (reconcile?)
 
 	return nil
 }
