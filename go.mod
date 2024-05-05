@@ -1,10 +1,11 @@
 module github.com/ezratameno/integration
 
-go 1.22.2
+go 1.22.0
 
 require (
 	code.gitea.io/sdk/gitea v0.17.1
 	github.com/fluxcd/helm-controller/api v0.37.4
+	github.com/fluxcd/pkg/apis/meta v1.3.0
 	github.com/fluxcd/source-controller/api v1.2.5
 	k8s.io/apimachinery v0.30.0
 	sigs.k8s.io/controller-runtime v0.18.0
@@ -22,7 +23,6 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.0 // indirect
 	github.com/fluxcd/pkg/apis/acl v0.1.0 // indirect
 	github.com/fluxcd/pkg/apis/kustomize v1.3.0 // indirect
-	github.com/fluxcd/pkg/apis/meta v1.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/go-fed/httpsig v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.1 // indirect
