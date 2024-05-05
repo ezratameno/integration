@@ -12,7 +12,7 @@ import (
 
 	"github.com/ezratameno/integration/pkg/exec"
 	helmv2 "github.com/fluxcd/helm-controller/api/v2beta2"
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
 	apimeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
 	"k8s.io/apimachinery/pkg/api/meta"
