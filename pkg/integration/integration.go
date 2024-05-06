@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	giteasdk "code.gitea.io/sdk/gitea"
@@ -119,109 +120,69 @@ func NewClient(opts Opts) (*Client, error) {
 	return c, nil
 }
 
-type Info struct {
-	Err error
-	Msg Message
-}
+type cancelFuncs []func() error
 
-type Message int
+func (c cancelFuncs) CancelFunc() func() error {
 
-func (m Message) String() string {
-	switch m {
-	case MessageGiteaReady:
-		return "gitea is ready"
-	case MessageKindReady:
-		return "kind is ready"
-	case MessageFluxReady:
-		return "flux is ready"
-	default:
-		return fmt.Sprintf("%d", int(m))
+	return func() error {
+		var genErr error
+		for _, cancelFunc := range c {
+			err := cancelFunc()
+			genErr = errors.Join(genErr, err)
+		}
+
+		return genErr
 	}
+
 }
 
-const (
-	MessageUnknown Message = iota
-	MessageGiteaReady
-	MessageKindReady
-	MessageFluxReady
-)
+func (c *Client) StartIntegration(ctx context.Context) (func() error, error) {
 
-// TODO: maybe should return a chan that update on progress?
-// TODO: clean up once the context is done
-// TODO: do i want this to run in a goroutine?
-func (c *Client) StartIntegration(ctx context.Context) chan Info {
+	var cancelFuncs cancelFuncs
 
-	// ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	// defer cancel()
+	containerName, err := c.SetUpGitea(ctx)
+	if err != nil {
+		return func() error { return gitea.Close(containerName) },
+			fmt.Errorf("failed to set up gitea: %w", err)
+	}
 
-	ch := make(chan Info)
+	cancelFuncs = append(cancelFuncs, func() error {
+		return gitea.Close(containerName)
+	})
 
-	go func() {
-		containerName, err := c.SetUpGitea(ctx)
-		if err != nil {
-			defer gitea.Close(containerName)
-			ch <- Info{
-				Err: fmt.Errorf("failed to set up gitea: %w", err),
-			}
-			return
-		}
-		defer gitea.Close(containerName)
+	// Create cluster
+	err = c.kindClient.CreateClusterWithConfig(c.opts.KindClusterName, c.opts.KindConfigPath)
+	if err != nil {
+		return cancelFuncs.CancelFunc(), fmt.Errorf("failed to create kind cluster: %w", err)
+	}
 
-		ch <- Info{
-			Msg: MessageGiteaReady,
-		}
+	cancelFuncs = append(cancelFuncs, func() error {
+		return c.kindClient.DeleteCluster(c.opts.KindClusterName)
+	})
 
-		// Create cluster
-		err = c.kindClient.CreateClusterWithConfig(c.opts.KindClusterName, c.opts.KindConfigPath)
-		if err != nil {
-			ch <- Info{
-				Err: fmt.Errorf("failed to create kind cluster: %w", err),
-			}
-			return
-		}
-		defer c.kindClient.DeleteCluster(c.opts.KindClusterName)
+	// Bootstrap
 
-		ch <- Info{
-			Msg: MessageKindReady,
-		}
+	ip, err := getOutboundIP()
+	if err != nil {
+		return cancelFuncs.CancelFunc(), err
+	}
 
-		// Bootstrap
+	bootstrapOpts := flux.BootstrapOpts{
+		PrivateKeyPath: c.opts.PrivateKeyPath,
+		Branch:         "main",
+		Path:           c.opts.FluxPath,
+		Password:       c.opts.GiteaPassword,
+		Username:       c.opts.GiteaUsername,
+		Url:            fmt.Sprintf("localhost:%d/%s/%s.git", c.opts.GiteaSshPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
+		GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), c.opts.GiteaHttpPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
+	}
 
-		ip, err := getOutboundIP()
-		if err != nil {
+	err = c.fluxClient.Bootstrap(ctx, bootstrapOpts)
+	if err != nil {
+		return cancelFuncs.CancelFunc(), fmt.Errorf("failed to bootstrap: %w", err)
+	}
 
-			ch <- Info{
-				Err: err,
-			}
-			return
-		}
-
-		bootstrapOpts := flux.BootstrapOpts{
-			PrivateKeyPath: c.opts.PrivateKeyPath,
-			Branch:         "main",
-			Path:           c.opts.FluxPath,
-			Password:       c.opts.GiteaPassword,
-			Username:       c.opts.GiteaUsername,
-			Url:            fmt.Sprintf("localhost:%d/%s/%s.git", c.opts.GiteaSshPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
-			GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), c.opts.GiteaHttpPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
-		}
-
-		err = c.fluxClient.Bootstrap(ctx, bootstrapOpts)
-		if err != nil {
-			ch <- Info{
-				Err: fmt.Errorf("failed to bootstrap: %w", err),
-			}
-			return
-		}
-
-		ch <- Info{
-			Msg: MessageFluxReady,
-		}
-
-		<-ctx.Done()
-	}()
-
-	return ch
+	return cancelFuncs.CancelFunc(), nil
 
 }
 

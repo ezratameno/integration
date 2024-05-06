@@ -157,7 +157,7 @@ func (c *Client) WaitForKs(ctx context.Context, kss ...types.NamespacedName) err
 		namespace string
 	}
 
-	respCh := make(chan Resp, len(kss))
+	respCh := make(chan Resp)
 
 	for _, ks := range kss {
 		go func(client *Client, ks types.NamespacedName) {
@@ -189,12 +189,72 @@ func (c *Client) WaitForKs(ctx context.Context, kss ...types.NamespacedName) err
 		}(c, ks)
 	}
 
-	for i := range respCh {
-		if i.err != nil {
-			return fmt.Errorf("failed to wait for ks %s in namespace %s: %w", i.name, i.namespace, i.err)
+	for i := 0; i < len(kss); i++ {
+		resp := <-respCh
+		if resp.err != nil {
+			return fmt.Errorf("failed to wait for ks %s in namespace %s: %w", resp.name, resp.namespace, resp.err)
 		}
 
-		fmt.Printf("ks %s in ns %s is ready \n", i.name, i.namespace)
+		fmt.Printf("ks %s in ns %s is ready \n", resp.name, resp.namespace)
+	}
+
+	return nil
+}
+
+func (c *Client) ReconcileKS(ctx context.Context, kustomizations ...types.NamespacedName) error {
+
+	type Resp struct {
+		err       error
+		name      string
+		namespace string
+	}
+
+	respCh := make(chan Resp)
+
+	for _, ks := range kustomizations {
+		go func(c *Client, ks types.NamespacedName) {
+			var kustomization kustomizev1.Kustomization
+
+			err := c.kubeClient.Get(ctx, ks, &kustomization)
+			if err != nil {
+
+				respCh <- Resp{
+					err:       fmt.Errorf("failed to get kustomization %s: %w", kustomization.Name, err),
+					name:      ks.Name,
+					namespace: ks.Namespace,
+				}
+				return
+			}
+
+			// Annotate the Kustomization resource to trigger reconciliation
+			kustomization.Annotations["reconcile.fluxcd.io/requestedAt"] = fmt.Sprintf("%d", time.Now().Unix())
+
+			err = c.kubeClient.Update(ctx, &kustomization, &client.SubResourceUpdateOptions{})
+			if err != nil {
+				respCh <- Resp{
+					err:       fmt.Errorf("failed to update kustomization %s: %w", kustomization.Name, err),
+					name:      ks.Name,
+					namespace: ks.Namespace,
+				}
+				return
+			}
+
+			respCh <- Resp{
+				err:       nil,
+				name:      ks.Name,
+				namespace: ks.Namespace,
+			}
+
+		}(c, ks)
+	}
+
+	for i := 0; i < len(kustomizations); i++ {
+		resp := <-respCh
+		if resp.err != nil {
+			return fmt.Errorf("failed to reconcile for ks %s in namespace %s: %w", resp.name, resp.namespace, resp.err)
+		}
+
+		fmt.Printf("ks %s is ns %s is reconciled \n", resp.name, resp.namespace)
 	}
 
 	return nil
