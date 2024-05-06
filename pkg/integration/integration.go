@@ -8,6 +8,7 @@ import (
 	"github.com/ezratameno/integration/pkg/flux"
 	"github.com/ezratameno/integration/pkg/gitea"
 	"github.com/ezratameno/integration/pkg/kind"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 type Opts struct {
@@ -257,6 +258,6 @@ func (c *Client) SetUpGitea(ctx context.Context) (string, error) {
 	return containerName, nil
 }
 
-func (c *Client) WaitForKs(ctx context.Context, name, namespace string) error {
-	return c.fluxClient.WaitForKs(ctx, name, namespace)
+func (c *Client) WaitForKs(ctx context.Context, kss ...types.NamespacedName) error {
+	return c.fluxClient.WaitForKs(ctx, kss...)
 }

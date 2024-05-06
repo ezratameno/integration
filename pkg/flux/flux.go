@@ -15,6 +15,7 @@ import (
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
 	apimeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -91,7 +92,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 				continue
 			}
 
-			fmt.Println(s)
+			// fmt.Println(s)
 
 			if strings.Contains(s, `reconciled sync configuration`) {
 				return
@@ -127,7 +128,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	// Wait until git repo is in status ready
 
 	fmt.Println("Waiting for git repo to be ready")
-	err = wait.PollUntilContextCancel(ctx, 2*time.Second, true,
+	err = wait.PollUntilContextCancel(ctx, 1*time.Second, true,
 		func(ctx context.Context) (done bool, err error) {
 
 			namespacedName := types.NamespacedName{
@@ -148,23 +149,52 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 }
 
 // WaitForKs wait for the kustomization to be ready
-func (c *Client) WaitForKs(ctx context.Context, name, namespace string) error {
-	err := wait.PollUntilContextCancel(ctx, 2*time.Second, true, func(ctx context.Context) (done bool, err error) {
-		namespacedName := types.NamespacedName{
-			Namespace: namespace,
-			Name:      name,
+func (c *Client) WaitForKs(ctx context.Context, kss ...types.NamespacedName) error {
+
+	type Resp struct {
+		err       error
+		name      string
+		namespace string
+	}
+
+	respCh := make(chan Resp, len(kss))
+
+	for _, ks := range kss {
+		go func(client *Client, ks types.NamespacedName) {
+
+			err := wait.PollUntilContextCancel(ctx, 2*time.Second, true, func(ctx context.Context) (done bool, err error) {
+				namespacedName := types.NamespacedName{
+					Namespace: ks.Namespace,
+					Name:      ks.Name,
+				}
+
+				var ks kustomizev1.Kustomization
+
+				if err := c.kubeClient.Get(ctx, namespacedName, &ks); err != nil {
+					// Ignore not found error
+					if apierrors.IsNotFound(err) {
+						return false, nil
+					}
+					return false, err
+				}
+				return meta.IsStatusConditionTrue(ks.Status.Conditions, apimeta.ReadyCondition), nil
+			})
+
+			respCh <- Resp{
+				err:       err,
+				name:      ks.Name,
+				namespace: ks.Namespace,
+			}
+
+		}(c, ks)
+	}
+
+	for i := range respCh {
+		if i.err != nil {
+			return fmt.Errorf("failed to wait for ks %s in namespace %s: %w", i.name, i.namespace, i.err)
 		}
 
-		var ks kustomizev1.Kustomization
-
-		if err := c.kubeClient.Get(ctx, namespacedName, &ks); err != nil {
-			return false, err
-		}
-		return meta.IsStatusConditionTrue(ks.Status.Conditions, apimeta.ReadyCondition), nil
-	})
-
-	if err != nil {
-		return err
+		fmt.Printf("ks %s in ns %s is ready \n", i.name, i.namespace)
 	}
 
 	return nil
