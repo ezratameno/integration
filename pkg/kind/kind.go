@@ -8,10 +8,6 @@ import (
 	"sigs.k8s.io/kind/pkg/cluster"
 )
 
-const (
-	defaultConfigPath = ""
-)
-
 type Client struct {
 	p *cluster.Provider
 }

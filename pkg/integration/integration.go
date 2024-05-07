@@ -1,11 +1,13 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 
 	giteasdk "code.gitea.io/sdk/gitea"
+	"github.com/ezratameno/integration/pkg/exec"
 	"github.com/ezratameno/integration/pkg/flux"
 	"github.com/ezratameno/integration/pkg/gitea"
 	"github.com/ezratameno/integration/pkg/kind"
@@ -40,6 +42,9 @@ type Opts struct {
 
 	// Path to a kind config
 	KindConfigPath string
+
+	// Image to load to the kind cluster
+	KindImageToLoad []string
 
 	// Flux
 
@@ -159,6 +164,18 @@ func (c *Client) StartIntegration(ctx context.Context) (func() error, error) {
 	cancelFuncs = append(cancelFuncs, func() error {
 		return c.kindClient.DeleteCluster(c.opts.KindClusterName)
 	})
+
+	// load images
+	for _, image := range c.opts.KindImageToLoad {
+		var buf bytes.Buffer
+		cmd := fmt.Sprintf("kind load docker-image %s --name %s", image, c.opts.KindClusterName)
+		err := exec.LocalExecContext(ctx, cmd, &buf)
+		if err != nil {
+			return cancelFuncs.CancelFunc(), fmt.Errorf("failed to load image %s: %s %w", image, buf.String(), err)
+		}
+	}
+
+	fmt.Println("loaded images")
 
 	// Bootstrap
 

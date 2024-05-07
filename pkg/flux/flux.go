@@ -227,9 +227,13 @@ func (c *Client) ReconcileKS(ctx context.Context, kustomizations ...types.Namesp
 			}
 
 			// Annotate the Kustomization resource to trigger reconciliation
+
+			if len(kustomization.Annotations) == 0 {
+				kustomization.Annotations = make(map[string]string)
+			}
 			kustomization.Annotations["reconcile.fluxcd.io/requestedAt"] = fmt.Sprintf("%d", time.Now().Unix())
 
-			err = c.kubeClient.Update(ctx, &kustomization, &client.SubResourceUpdateOptions{})
+			err = c.kubeClient.Patch(ctx, &kustomization, client.Merge)
 			if err != nil {
 				respCh <- Resp{
 					err:       fmt.Errorf("failed to update kustomization %s: %w", kustomization.Name, err),
