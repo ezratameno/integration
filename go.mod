@@ -11,6 +11,7 @@ require (
 	k8s.io/apimachinery v0.30.0
 	sigs.k8s.io/controller-runtime v0.18.0
 	sigs.k8s.io/kind v0.22.0
+
 )
 
 require (
@@ -39,7 +40,7 @@ require (
 	github.com/google/safetext v0.0.0-20220905092116-b49f7bc46da2 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/hashicorp/go-version v1.6.0 // indirect
-	github.com/imdario/mergo v0.3.6 // indirect
+	github.com/imdario/mergo v0.3.12 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect

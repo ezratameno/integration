@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	giteasdk "code.gitea.io/sdk/gitea"
 	"github.com/ezratameno/integration/pkg/exec"
@@ -14,7 +16,51 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-type Opts struct {
+type Client struct {
+	kindClient  *kind.Client
+	giteaClient *gitea.Client
+	fluxClient  *flux.Client
+	out         io.Writer
+}
+
+func NewClient(opts gitea.Opts, out io.Writer) (*Client, error) {
+
+	giteaClient := gitea.NewClient(opts, out)
+
+	kindClient := kind.NewClient()
+
+	fluxClient, err := flux.NewClient(out)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create flux client: %w", err)
+	}
+
+	c := &Client{
+		giteaClient: giteaClient,
+		kindClient:  kindClient,
+		fluxClient:  fluxClient,
+		out:         out,
+	}
+
+	return c, nil
+}
+
+type cancelFuncs []func() error
+
+func (c cancelFuncs) CancelFunc() func() error {
+
+	return func() error {
+		var genErr error
+		for _, cancelFunc := range c {
+			err := cancelFunc()
+			genErr = errors.Join(genErr, err)
+		}
+
+		return genErr
+	}
+
+}
+
+type CreateOpts struct {
 
 	// Gitea
 
@@ -50,132 +96,120 @@ type Opts struct {
 
 	// Path in the local repo that we should bootstrap from
 	FluxPath string
+
+	GiteaContainerName string
+
+	// Path to kubernetes manifests to apply
+	ManifestsToApply []string
+
+	// Wait for those kustomizations to be ready
+	KustomizationsToWaitFor []types.NamespacedName
 }
 
-type Client struct {
-	opts        Opts
-	kindClient  *kind.Client
-	giteaClient *gitea.Client
-	fluxClient  *flux.Client
-}
+func (c *Client) Run(ctx context.Context, opts CreateOpts) (func() error, error) {
 
-func NewClient(opts Opts) (*Client, error) {
-
-	// Set default
-
-	if opts.GiteaHttpPort == 0 {
-		opts.GiteaHttpPort = 3000
-	}
-
-	if opts.GiteaSshPort == 0 {
-		opts.GiteaSshPort = 2222
-	}
-
-	if opts.GiteaUsername == "" {
-		opts.GiteaUsername = "labuser"
-	}
-
-	if opts.GiteaPassword == "" {
-		opts.GiteaPassword = "adminlabuser"
-	}
-
-	if opts.GiteaRepoName == "" {
-		opts.GiteaRepoName = "test"
-	}
-
-	if opts.GiteaLocalRepoPath == "" {
-		return nil, fmt.Errorf("local repo path is required")
-	}
-
-	// TODO: maybe generate a rand number so we can run multiple env?
-	if opts.PrivateKeyPath == "" {
-		opts.PrivateKeyPath = "/tmp/gitea-key.pem"
-	}
-
-	if opts.KindClusterName == "" {
-		opts.KindClusterName = "integration"
-	}
-
-	if opts.KindConfigPath == "" {
-		return nil, fmt.Errorf("kind config path is required")
-	}
-
-	giteaOpts := gitea.Opts{
-		Addr:     "http://localhost",
-		SSHPort:  opts.GiteaSshPort,
-		HttpPort: opts.GiteaHttpPort,
-	}
-
-	giteaClient := gitea.NewClient(giteaOpts)
-
-	kindClient := kind.NewClient()
-
-	fluxClient, err := flux.NewClient()
+	err := validateCreateOpts(&opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create flux client: %w", err)
+		return func() error { return nil }, err
+	}
+	cancelFunc, err := c.StartEnv(ctx, opts)
+	if err != nil {
+		return cancelFunc, err
 	}
 
-	c := &Client{
-		opts:        opts,
-		giteaClient: giteaClient,
-		kindClient:  kindClient,
-		fluxClient:  fluxClient,
+	err = applyManifest(ctx, opts.ManifestsToApply...)
+	if err != nil {
+		return cancelFunc, fmt.Errorf("failed to apply manifests: %w", err)
 	}
 
-	return c, nil
+	err = c.fluxClient.WaitForKs(ctx, opts.KustomizationsToWaitFor...)
+	if err != nil {
+		return cancelFunc, fmt.Errorf("failed to wait for kustomizations: %w", err)
+	}
+
+	return cancelFunc, nil
 }
 
-type cancelFuncs []func() error
+type DeleteOpts struct {
+	KindClusterName    string
+	GiteaContainerName string
+}
 
-func (c cancelFuncs) CancelFunc() func() error {
+// Delete will delete the kind cluster and the gitea container.
+func (c *Client) Delete(ctx context.Context, opts DeleteOpts) error {
 
-	return func() error {
-		var genErr error
-		for _, cancelFunc := range c {
-			err := cancelFunc()
-			genErr = errors.Join(genErr, err)
+	var genErr error
+
+	err := c.kindClient.DeleteCluster(opts.KindClusterName)
+	if err != nil {
+		genErr = errors.Join(genErr, err)
+	}
+
+	err = c.giteaClient.Delete(ctx, opts.GiteaContainerName)
+	if err != nil {
+		genErr = errors.Join(genErr, err)
+	}
+
+	return genErr
+}
+
+func applyManifest(ctx context.Context, manifests ...string) error {
+
+	for _, manifest := range manifests {
+		cmd := fmt.Sprintf("kubectl apply -f %s", manifest)
+		buf := bytes.Buffer{}
+		err := exec.LocalExecContext(ctx, cmd, &buf)
+		if err != nil {
+			return err
 		}
-
-		return genErr
 	}
 
+	return nil
 }
-
-func (c *Client) StartIntegration(ctx context.Context) (func() error, error) {
+func (c *Client) StartEnv(ctx context.Context, opts CreateOpts) (func() error, error) {
 
 	var cancelFuncs cancelFuncs
 
-	containerName, err := c.SetUpGitea(ctx)
+	// TODO: Maybe start gitea and kind cluster both at the same time? save a little time
+	containerName, err := c.SetUpGitea(ctx, opts)
 	if err != nil {
-		return func() error { return gitea.Close(containerName) },
+		return func() error { return c.giteaClient.Delete(context.TODO(), containerName) },
 			fmt.Errorf("failed to set up gitea: %w", err)
 	}
 
 	cancelFuncs = append(cancelFuncs, func() error {
-		return gitea.Close(containerName)
+		return c.giteaClient.Delete(context.TODO(), containerName)
 	})
 
 	// Create cluster
-	err = c.kindClient.CreateClusterWithConfig(c.opts.KindClusterName, c.opts.KindConfigPath)
+	err = c.kindClient.CreateClusterWithConfig(opts.KindClusterName, opts.KindConfigPath)
 	if err != nil {
 		return cancelFuncs.CancelFunc(), fmt.Errorf("failed to create kind cluster: %w", err)
 	}
 
 	cancelFuncs = append(cancelFuncs, func() error {
-		return c.kindClient.DeleteCluster(c.opts.KindClusterName)
+		return c.kindClient.DeleteCluster(opts.KindClusterName)
 	})
 
 	// load images
-	for _, image := range c.opts.KindImageToLoad {
+	for _, image := range opts.KindImageToLoad {
 		var buf bytes.Buffer
-		cmd := fmt.Sprintf("kind load docker-image %s --name %s", image, c.opts.KindClusterName)
+		cmd := fmt.Sprintf("kind load docker-image %s --name %s", image, opts.KindClusterName)
 		err := exec.LocalExecContext(ctx, cmd, &buf)
 		if err != nil {
+
+			// Ignore error when image not present on local host
+			if strings.Contains(buf.String(), "not present locally") {
+				fmt.Fprintf(c.out, "image %s is not present locally, will not load \n", image)
+				continue
+			}
 			return cancelFuncs.CancelFunc(), fmt.Errorf("failed to load image %s: %s %w", image, buf.String(), err)
 		}
 	}
 
-	fmt.Println("loaded images")
+	if len(opts.KindImageToLoad) > 0 {
+		fmt.Fprintln(c.out, "loaded images")
+	}
 
 	// Bootstrap
 
@@ -185,13 +219,13 @@ func (c *Client) StartIntegration(ctx context.Context) (func() error, error) {
 	}
 
 	bootstrapOpts := flux.BootstrapOpts{
-		PrivateKeyPath: c.opts.PrivateKeyPath,
+		PrivateKeyPath: opts.PrivateKeyPath,
 		Branch:         "main",
-		Path:           c.opts.FluxPath,
-		Password:       c.opts.GiteaPassword,
-		Username:       c.opts.GiteaUsername,
-		Url:            fmt.Sprintf("localhost:%d/%s/%s.git", c.opts.GiteaSshPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
-		GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), c.opts.GiteaHttpPort, c.opts.GiteaUsername, c.opts.GiteaRepoName),
+		Path:           opts.FluxPath,
+		Password:       opts.GiteaPassword,
+		Username:       opts.GiteaUsername,
+		Url:            fmt.Sprintf("localhost:%d/%s/%s.git", opts.GiteaSshPort, opts.GiteaUsername, opts.GiteaRepoName),
+		GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), opts.GiteaHttpPort, opts.GiteaUsername, opts.GiteaRepoName),
 	}
 
 	err = c.fluxClient.Bootstrap(ctx, bootstrapOpts)
@@ -204,12 +238,13 @@ func (c *Client) StartIntegration(ctx context.Context) (func() error, error) {
 }
 
 // TODO: do i need to delete the gitea container if the operation failed?
-func (c *Client) SetUpGitea(ctx context.Context) (string, error) {
+func (c *Client) SetUpGitea(ctx context.Context, opts CreateOpts) (string, error) {
 
-	signUpOpts := gitea.SignUpOpts{
-		Email:    fmt.Sprintf("%s@gmail.com", c.opts.GiteaUsername),
-		Password: c.opts.GiteaPassword,
-		Username: c.opts.GiteaUsername,
+	signUpOpts := gitea.StartContainerOpts{
+		Email:         fmt.Sprintf("%s@gmail.com", opts.GiteaUsername),
+		Password:      opts.GiteaPassword,
+		Username:      opts.GiteaUsername,
+		ContainerName: opts.GiteaContainerName,
 	}
 
 	// Start github
@@ -218,17 +253,17 @@ func (c *Client) SetUpGitea(ctx context.Context) (string, error) {
 		return containerName, fmt.Errorf("failed to start gitea: %w", err)
 	}
 
-	_, err = c.giteaClient.GeneratePrivatePublicKeys(c.opts.GiteaRepoName, c.opts.PrivateKeyPath)
+	_, err = c.giteaClient.GeneratePrivatePublicKeys(opts.GiteaRepoName, opts.PrivateKeyPath)
 	if err != nil {
 		return containerName, fmt.Errorf("failed to generate public and private keys: %w", err)
 	}
 
 	repoOpts := giteasdk.CreateRepoOption{
-		Name:       c.opts.GiteaRepoName,
+		Name:       opts.GiteaRepoName,
 		TrustModel: giteasdk.TrustModelCollaboratorCommitter,
 	}
 
-	_, err = c.giteaClient.CreateRepoFromExisting(ctx, repoOpts, c.opts.GiteaLocalRepoPath)
+	_, err = c.giteaClient.CreateRepoFromExisting(ctx, repoOpts, opts.GiteaLocalRepoPath)
 	if err != nil {
 		return containerName, fmt.Errorf("failed to create gitea repo with local repo files: %w", err)
 	}

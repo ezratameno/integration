@@ -4,17 +4,20 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ezratameno/integration/pkg/exec"
 	helmv2 "github.com/fluxcd/helm-controller/api/v2beta2"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
 	apimeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -24,11 +27,14 @@ import (
 
 type Client struct {
 	kubeClient client.Client
+	out        io.Writer
 }
 
-func NewClient() (*Client, error) {
+func NewClient(out io.Writer) (*Client, error) {
 
-	c := &Client{}
+	c := &Client{
+		out: out,
+	}
 
 	return c, nil
 }
@@ -46,6 +52,8 @@ type BootstrapOpts struct {
 }
 
 func (c *Client) Initialize() error {
+	log.SetLogger(logr.Logger{})
+
 	// register the GitOps Toolkit schema definitions
 	scheme := runtime.NewScheme()
 	_ = sourcev1.AddToScheme(scheme)
@@ -118,8 +126,6 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	// TODO: improve this, maybe it's too specific?
 	gitRepo.Spec.URL = opts.GitRepoUrl
 
-	fmt.Println("url", gitRepo.Spec.URL)
-
 	err = c.kubeClient.Patch(ctx, gitRepo, client.Merge, &client.PatchOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to patch changes: %w", err)
@@ -127,7 +133,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 
 	// Wait until git repo is in status ready
 
-	fmt.Println("Waiting for git repo to be ready")
+	fmt.Fprintf(c.out, "Waiting for git repo to be ready \n")
 	err = wait.PollUntilContextCancel(ctx, 1*time.Second, true,
 		func(ctx context.Context) (done bool, err error) {
 
@@ -195,7 +201,7 @@ func (c *Client) WaitForKs(ctx context.Context, kss ...types.NamespacedName) err
 			return fmt.Errorf("failed to wait for ks %s in namespace %s: %w", resp.name, resp.namespace, resp.err)
 		}
 
-		fmt.Printf("ks %s in ns %s is ready \n", resp.name, resp.namespace)
+		fmt.Fprintf(c.out, "ks %s in ns %s is ready \n", resp.name, resp.namespace)
 	}
 
 	return nil
@@ -258,7 +264,7 @@ func (c *Client) ReconcileKS(ctx context.Context, kustomizations ...types.Namesp
 			return fmt.Errorf("failed to reconcile for ks %s in namespace %s: %w", resp.name, resp.namespace, resp.err)
 		}
 
-		fmt.Printf("ks %s is ns %s is reconciled \n", resp.name, resp.namespace)
+		fmt.Fprintf(c.out, "ks %s is ns %s is reconciled \n", resp.name, resp.namespace)
 	}
 
 	return nil

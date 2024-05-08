@@ -38,11 +38,13 @@ type Client struct {
 	opts   Opts
 	do     *http.Client
 	client *gitea.Client
+	out    io.Writer
 }
 
-func NewClient(opts Opts) *Client {
+func NewClient(opts Opts, out io.Writer) *Client {
 	c := &Client{
 		opts: opts,
+		out:  out,
 		do: &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
@@ -55,67 +57,65 @@ func NewClient(opts Opts) *Client {
 	return c
 }
 
-type SignUpOpts struct {
-	Email    string
-	Password string
-	Username string
+type StartContainerOpts struct {
+	Email         string
+	Password      string
+	Username      string
+	ContainerName string
 }
 
-func (c *Client) Start(ctx context.Context, signupOpts SignUpOpts) (string, error) {
+func (c *Client) Start(ctx context.Context, opts StartContainerOpts) (string, error) {
 
-	// TODO: install gitea (docker + actual installment)
-
-	containerName := fmt.Sprintf("gitea-%s", randomString(4))
 	var buf bytes.Buffer
 
 	// GITEA__security__INSTALL_LOCK=true skip on the installation page
-	cmd := fmt.Sprintf("docker run -d -p %d:3000 -p %d:22 -e GITEA__security__INSTALL_LOCK=true --name %s  gitea/gitea:1.21.7", c.opts.HttpPort, c.opts.SSHPort, containerName)
+	cmd := fmt.Sprintf("docker run -d -p %d:3000 -p %d:22 -e GITEA__security__INSTALL_LOCK=true --name %s  gitea/gitea:1.21.7", c.opts.HttpPort, c.opts.SSHPort, opts.ContainerName)
 	err := exec.LocalExecContext(ctx, cmd, &buf)
 	if err != nil {
-		return containerName, fmt.Errorf("failed to create container: %s %w", buf.String(), err)
+		return opts.ContainerName, fmt.Errorf("failed to create container: %s %w", buf.String(), err)
 	}
 
-	fmt.Println("start container")
+	fmt.Fprintln(c.out, "start gitea container")
 
 	// 2. sign up, the first user that signs up is admin
 
 	// give time for the gitea to start
 
 	// TODO: check for a better way
-	time.Sleep(10 * time.Second)
+	time.Sleep(8 * time.Second)
 
-	err = c.Signup(ctx, signupOpts)
+	err = c.Signup(ctx, opts)
 	if err != nil {
-		return containerName, fmt.Errorf("failed signing user: %w", err)
+		return opts.ContainerName, fmt.Errorf("failed signing user: %w", err)
 	}
 
 	// Set up admin information
-	c.opts.adminEmail = signupOpts.Email
-	c.opts.adminUser = signupOpts.Username
-	c.opts.adminPassword = signupOpts.Password
+	c.opts.adminEmail = opts.Email
+	c.opts.adminUser = opts.Username
+	c.opts.adminPassword = opts.Password
 
 	client, err := gitea.NewClient(fmt.Sprintf("%s:%d", c.opts.Addr, c.opts.HttpPort),
 		gitea.SetBasicAuth(c.opts.adminUser, c.opts.adminPassword))
 	if err != nil {
-		return containerName, fmt.Errorf("failed to create gitea client: %w", err)
+		return opts.ContainerName, fmt.Errorf("failed to create gitea client: %w", err)
 	}
 
 	c.client = client
 
-	return containerName, nil
+	return opts.ContainerName, nil
 }
 
-func Close(containerName string) error {
+func (c *Client) Delete(ctx context.Context, containerName string) error {
 	var buf bytes.Buffer
 	cmd := fmt.Sprintf("docker container rm -f %s", containerName)
-	err := exec.LocalExecContext(context.TODO(), cmd, &buf)
+	err := exec.LocalExecContext(ctx, cmd, &buf)
 	if err != nil {
 		return fmt.Errorf("failed to delete container: %s %w", buf.String(), err)
 	}
 	return nil
 }
 
-func (c *Client) Signup(ctx context.Context, opts SignUpOpts) error {
+func (c *Client) Signup(ctx context.Context, opts StartContainerOpts) error {
 
 	signUpurl := fmt.Sprintf("%s:%d/user/sign_up", c.opts.Addr, c.opts.HttpPort)
 
@@ -273,7 +273,7 @@ func (c *Client) CreateRepoFromExisting(ctx context.Context, opts gitea.CreateRe
 		return nil, err
 	}
 
-	fmt.Println("uploading files to gitea")
+	fmt.Fprintln(c.out, "uploading local files to gitea")
 	err = c.CreateMultiFiles(ctx, createOpts, c.opts.adminUser, repo.Name)
 	if err != nil {
 		return nil, err
@@ -309,7 +309,6 @@ func (c *Client) CreateMultiFiles(ctx context.Context, opts CreateMultiFiles, ow
 
 	url := fmt.Sprintf("%s:%d/api/v1/repos/%s/%s/contents", c.opts.Addr, c.opts.HttpPort, owner, repo)
 
-	fmt.Println("url", url)
 	body, err := json.Marshal(opts)
 	if err != nil {
 		return err
