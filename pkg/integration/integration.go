@@ -117,14 +117,30 @@ func (c *Client) Run(ctx context.Context, opts CreateOpts) (func() error, error)
 		return cancelFunc, err
 	}
 
+	if len(opts.ManifestsToApply) > 0 {
+		fmt.Fprintln(c.out, "applying manifests")
+	}
+
 	err = applyManifest(ctx, opts.ManifestsToApply...)
 	if err != nil {
 		return cancelFunc, fmt.Errorf("failed to apply manifests: %w", err)
 	}
 
+	if len(opts.ManifestsToApply) > 0 {
+		fmt.Fprintln(c.out, "applied manifests")
+	}
+
+	if len(opts.KustomizationsToWaitFor) > 0 {
+		fmt.Fprintln(c.out, "waiting for kustomizations to be ready")
+	}
+
 	err = c.fluxClient.WaitForKs(ctx, opts.KustomizationsToWaitFor...)
 	if err != nil {
 		return cancelFunc, fmt.Errorf("failed to wait for kustomizations: %w", err)
+	}
+
+	if len(opts.KustomizationsToWaitFor) > 0 {
+		fmt.Fprintln(c.out, "finish waiting for kustomizations")
 	}
 
 	return cancelFunc, nil
@@ -181,15 +197,25 @@ func (c *Client) StartEnv(ctx context.Context, opts CreateOpts) (func() error, e
 		return c.giteaClient.Delete(context.TODO(), containerName)
 	})
 
+	fmt.Fprintln(c.out, "finish setting gitea")
+
+	fmt.Fprintln(c.out, "creating kind cluster")
+
 	// Create cluster
 	err = c.kindClient.CreateClusterWithConfig(opts.KindClusterName, opts.KindConfigPath)
 	if err != nil {
 		return cancelFuncs.CancelFunc(), fmt.Errorf("failed to create kind cluster: %w", err)
 	}
 
+	fmt.Fprintln(c.out, "kind cluster created")
+
 	cancelFuncs = append(cancelFuncs, func() error {
 		return c.kindClient.DeleteCluster(opts.KindClusterName)
 	})
+
+	if len(opts.KindImageToLoad) > 0 {
+		fmt.Fprintln(c.out, "loading images to kind cluster")
+	}
 
 	// load images
 	for _, image := range opts.KindImageToLoad {
