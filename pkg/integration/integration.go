@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	giteasdk "code.gitea.io/sdk/gitea"
 	"github.com/ezratameno/integration/pkg/exec"
@@ -117,19 +118,6 @@ func (c *Client) Run(ctx context.Context, opts CreateOpts) (func() error, error)
 		return cancelFunc, err
 	}
 
-	if len(opts.ManifestsToApply) > 0 {
-		fmt.Fprintln(c.out, "applying manifests")
-	}
-
-	err = applyManifest(ctx, opts.ManifestsToApply...)
-	if err != nil {
-		return cancelFunc, fmt.Errorf("failed to apply manifests: %w", err)
-	}
-
-	if len(opts.ManifestsToApply) > 0 {
-		fmt.Fprintln(c.out, "applied manifests")
-	}
-
 	if len(opts.KustomizationsToWaitFor) > 0 {
 		fmt.Fprintln(c.out, "waiting for kustomizations to be ready")
 	}
@@ -186,55 +174,64 @@ func (c *Client) StartEnv(ctx context.Context, opts CreateOpts) (func() error, e
 
 	var cancelFuncs cancelFuncs
 
-	// TODO: Maybe start gitea and kind cluster both at the same time? save a little time
-	containerName, err := c.SetUpGitea(ctx, opts)
-	if err != nil {
-		return func() error { return c.giteaClient.Delete(context.TODO(), containerName) },
-			fmt.Errorf("failed to set up gitea: %w", err)
+	type res struct {
+		err        error
+		cancelFunc func() error
 	}
 
-	cancelFuncs = append(cancelFuncs, func() error {
-		return c.giteaClient.Delete(context.TODO(), containerName)
-	})
+	resCh := make(chan res)
+	var wg sync.WaitGroup
+	done := make(chan struct{})
 
-	fmt.Fprintln(c.out, "finish setting gitea")
-
-	fmt.Fprintln(c.out, "creating kind cluster")
-
-	// Create cluster
-	err = c.kindClient.CreateClusterWithConfig(opts.KindClusterName, opts.KindConfigPath)
-	if err != nil {
-		return cancelFuncs.CancelFunc(), fmt.Errorf("failed to create kind cluster: %w", err)
-	}
-
-	fmt.Fprintln(c.out, "kind cluster created")
-
-	cancelFuncs = append(cancelFuncs, func() error {
-		return c.kindClient.DeleteCluster(opts.KindClusterName)
-	})
-
-	if len(opts.KindImageToLoad) > 0 {
-		fmt.Fprintln(c.out, "loading images to kind cluster")
-	}
-
-	// load images
-	for _, image := range opts.KindImageToLoad {
-		var buf bytes.Buffer
-		cmd := fmt.Sprintf("kind load docker-image %s --name %s", image, opts.KindClusterName)
-		err := exec.LocalExecContext(ctx, cmd, &buf)
+	wg.Add(1)
+	go func(client *Client) {
+		defer wg.Done()
+		containerName, err := c.SetUpGitea(ctx, opts)
+		cancelFunc := func() error {
+			return nil
+		}
 		if err != nil {
+			cancelFunc = func() error { return c.giteaClient.Delete(context.TODO(), containerName) }
+		}
 
-			// Ignore error when image not present on local host
-			if strings.Contains(buf.String(), "not present locally") {
-				fmt.Fprintf(c.out, "image %s is not present locally, will not load \n", image)
-				continue
-			}
-			return cancelFuncs.CancelFunc(), fmt.Errorf("failed to load image %s: %s %w", image, buf.String(), err)
+		resCh <- res{
+			cancelFunc: cancelFunc,
+			err:        err,
+		}
+
+	}(c)
+
+	wg.Add(1)
+	go func(client *Client) {
+		defer wg.Done()
+		cancelFunc, err := client.SetUpKind(ctx, opts)
+		resCh <- res{
+			cancelFunc: cancelFunc,
+			err:        err,
+		}
+	}(c)
+
+	// wait until
+	go func() {
+		wg.Wait()
+		close(resCh)
+		done <- struct{}{}
+	}()
+
+	// error from both gitea and kind
+	var genErr error
+	for i := range resCh {
+		cancelFuncs = append(cancelFuncs, i.cancelFunc)
+		if i.err != nil {
+			genErr = errors.Join(genErr, i.err)
 		}
 	}
 
-	if len(opts.KindImageToLoad) > 0 {
-		fmt.Fprintln(c.out, "loaded images")
+	// Wait until kind and gitea are ready
+	<-done
+
+	if genErr != nil {
+		return cancelFuncs.CancelFunc(), genErr
 	}
 
 	// Bootstrap
@@ -261,6 +258,63 @@ func (c *Client) StartEnv(ctx context.Context, opts CreateOpts) (func() error, e
 
 	return cancelFuncs.CancelFunc(), nil
 
+}
+
+func (c *Client) SetUpKind(ctx context.Context, opts CreateOpts) (func() error, error) {
+	fmt.Fprintln(c.out, "creating kind cluster")
+
+	// Create cluster
+	err := c.kindClient.CreateClusterWithConfig(opts.KindClusterName, opts.KindConfigPath)
+	if err != nil {
+		return func() error { return nil }, fmt.Errorf("failed to create kind cluster: %w", err)
+	}
+
+	fmt.Fprintln(c.out, "kind cluster created")
+
+	cancelFunc := func() error {
+		return c.kindClient.DeleteCluster(opts.KindClusterName)
+	}
+
+	if len(opts.ManifestsToApply) > 0 {
+		fmt.Fprintln(c.out, "applying manifests")
+	}
+
+	err = applyManifest(ctx, opts.ManifestsToApply...)
+	if err != nil {
+		return cancelFunc, fmt.Errorf("failed to apply manifests: %w", err)
+	}
+
+	if len(opts.ManifestsToApply) > 0 {
+		fmt.Fprintln(c.out, "applied manifests")
+	}
+
+	if len(opts.KindImageToLoad) > 0 {
+		fmt.Fprintln(c.out, "loading images to kind cluster")
+	}
+
+	// load images
+	for _, image := range opts.KindImageToLoad {
+		var buf bytes.Buffer
+		cmd := fmt.Sprintf("kind load docker-image %s --name %s", image, opts.KindClusterName)
+		err := exec.LocalExecContext(ctx, cmd, &buf)
+		if err != nil {
+
+			// Ignore error when image not present on local host
+			if strings.Contains(buf.String(), "not present locally") {
+				fmt.Fprintf(c.out, "image %s is not present locally, will not load \n", image)
+				continue
+			}
+			return cancelFunc, fmt.Errorf("failed to load image %s: %s %w", image, buf.String(), err)
+		}
+	}
+
+	if len(opts.KindImageToLoad) > 0 {
+		fmt.Fprintln(c.out, "loaded images")
+	}
+
+	fmt.Fprintln(c.out, "finish setting up kind cluster")
+
+	return cancelFunc, nil
 }
 
 // TODO: do i need to delete the gitea container if the operation failed?
@@ -293,6 +347,8 @@ func (c *Client) SetUpGitea(ctx context.Context, opts CreateOpts) (string, error
 	if err != nil {
 		return containerName, fmt.Errorf("failed to create gitea repo with local repo files: %w", err)
 	}
+
+	fmt.Fprintln(c.out, "finish setting up gitea")
 
 	return containerName, nil
 }

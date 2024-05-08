@@ -109,11 +109,14 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 		}
 	}()
 
+	fmt.Fprintln(c.out, "bootstrapping flux from gitea repo")
 	// TODO: handle better
 	err = exec.LocalExecContext(cmdCtx, cmd, &buf)
 	if err != nil && !strings.Contains(err.Error(), "signal: killed") {
 		return err
 	}
+
+	fmt.Fprintln(c.out, "finish flux bootstrap")
 
 	// TODO: maybe i need to use informers? or one time is enough?
 	// Update the url
