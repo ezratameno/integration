@@ -136,19 +136,12 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 
 	// Wait until git repo is in status ready
 
-	fmt.Fprintf(c.out, "Waiting for git repo to be ready \n")
-	err = wait.PollUntilContextCancel(ctx, 1*time.Second, true,
-		func(ctx context.Context) (done bool, err error) {
+	fmt.Fprintf(c.out, "Waiting for flux-system to be ready \n")
 
-			namespacedName := types.NamespacedName{
-				Namespace: gitRepo.GetNamespace(),
-				Name:      gitRepo.GetName(),
-			}
-			if err := c.kubeClient.Get(ctx, namespacedName, gitRepo); err != nil {
-				return false, err
-			}
-			return meta.IsStatusConditionTrue(gitRepo.Status.Conditions, apimeta.ReadyCondition), nil
-		})
+	err = c.WaitForKs(ctx, types.NamespacedName{
+		Namespace: "flux-system",
+		Name:      "flux-system",
+	})
 
 	if err != nil {
 		return err
@@ -222,38 +215,45 @@ func (c *Client) ReconcileKS(ctx context.Context, kustomizations ...types.Namesp
 
 	for _, ks := range kustomizations {
 		go func(c *Client, ks types.NamespacedName) {
-			var kustomization kustomizev1.Kustomization
+			// var kustomization kustomizev1.Kustomization
 
-			err := c.kubeClient.Get(ctx, ks, &kustomization)
+			// err := c.kubeClient.Get(ctx, ks, &kustomization)
+			// if err != nil {
+
+			// 	respCh <- Resp{
+			// 		err:       fmt.Errorf("failed to get kustomization %s: %w", kustomization.Name, err),
+			// 		name:      ks.Name,
+			// 		namespace: ks.Namespace,
+			// 	}
+			// 	return
+			// }
+
+			// // Annotate the Kustomization resource to trigger reconciliation
+
+			// if len(kustomization.Annotations) == 0 {
+			// 	kustomization.Annotations = make(map[string]string)
+			// }
+			// kustomization.Annotations["reconcile.fluxcd.io/requestedAt"] = fmt.Sprintf("%d", time.Now().Unix())
+
+			// err = c.kubeClient.Patch(ctx, &kustomization, client.Merge)
+			// if err != nil {
+			// 	respCh <- Resp{
+			// 		err:       fmt.Errorf("failed to update kustomization %s: %w", kustomization.Name, err),
+			// 		name:      ks.Name,
+			// 		namespace: ks.Namespace,
+			// 	}
+			// 	return
+			// }
+
+			var buf bytes.Buffer
+
+			cmd := fmt.Sprintf("flux reconcile ks %s -n %s", ks.Name, ks.Namespace)
+			err := exec.LocalExecContext(ctx, cmd, &buf)
 			if err != nil {
-
-				respCh <- Resp{
-					err:       fmt.Errorf("failed to get kustomization %s: %w", kustomization.Name, err),
-					name:      ks.Name,
-					namespace: ks.Namespace,
-				}
-				return
+				err = fmt.Errorf("%s: %w", buf.String(), err)
 			}
-
-			// Annotate the Kustomization resource to trigger reconciliation
-
-			if len(kustomization.Annotations) == 0 {
-				kustomization.Annotations = make(map[string]string)
-			}
-			kustomization.Annotations["reconcile.fluxcd.io/requestedAt"] = fmt.Sprintf("%d", time.Now().Unix())
-
-			err = c.kubeClient.Patch(ctx, &kustomization, client.Merge)
-			if err != nil {
-				respCh <- Resp{
-					err:       fmt.Errorf("failed to update kustomization %s: %w", kustomization.Name, err),
-					name:      ks.Name,
-					namespace: ks.Namespace,
-				}
-				return
-			}
-
 			respCh <- Resp{
-				err:       nil,
+				err:       err,
 				name:      ks.Name,
 				namespace: ks.Namespace,
 			}
@@ -264,11 +264,22 @@ func (c *Client) ReconcileKS(ctx context.Context, kustomizations ...types.Namesp
 	for i := 0; i < len(kustomizations); i++ {
 		resp := <-respCh
 		if resp.err != nil {
-			return fmt.Errorf("failed to reconcile for ks %s in namespace %s: %w", resp.name, resp.namespace, resp.err)
+			return fmt.Errorf("failed to reconcile ks %s in namespace %s: %w", resp.name, resp.namespace, resp.err)
 		}
 
 		fmt.Fprintf(c.out, "ks %s is ns %s is reconciled \n", resp.name, resp.namespace)
 	}
 
 	return nil
+}
+
+func (c *Client) ListKs(ctx context.Context) ([]kustomizev1.Kustomization, error) {
+	var kustomizations kustomizev1.KustomizationList
+
+	err := c.kubeClient.List(ctx, &kustomizations, &client.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	return kustomizations.Items, nil
 }

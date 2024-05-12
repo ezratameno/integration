@@ -9,9 +9,10 @@ tidy:
 	go mod tidy
 
 
-run:
+Cluster="test23"
+run: pull-images
 	@go run ./cmd/cli/integration_client/ create --kustomizations flux-system/apps  \
-	--cluster test \
+	--cluster ${Cluster} \
 	--local-repo ~/etameno/Desktop/github/habana-k8s-infra-services \
 	--flux-path flux/clusters/dc02 \
 	--manifests https://raw.githubusercontent.com/kubernetes-sigs/scheduler-plugins/release-1.23/manifests/capacityscheduling/crd.yaml \
@@ -19,4 +20,11 @@ run:
 	--kind-images ghcr.io/fluxcd/helm-controller:v0.31.2,ghcr.io/fluxcd/kustomize-controller:v0.35.1,ghcr.io/fluxcd/notification-controller:v0.33.0,ghcr.io/fluxcd/source-controller:v0.36.1
 
 delete:
-	@go run ./cmd/cli/integration_client/ delete --cluster test
+	go run ./cmd/cli/integration_client/ delete --cluster ${Cluster}
+
+
+pull-images:
+	docker pull ghcr.io/fluxcd/helm-controller:v0.31.2
+	docker pull ghcr.io/fluxcd/kustomize-controller:v0.35.1
+	docker pull ghcr.io/fluxcd/notification-controller:v0.33.0
+	docker pull ghcr.io/fluxcd/source-controller:v0.36.1

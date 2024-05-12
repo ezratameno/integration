@@ -82,7 +82,7 @@ func (c *Client) Start(ctx context.Context, opts StartContainerOpts) (string, er
 	// give time for the gitea to start
 
 	// TODO: check for a better way
-	time.Sleep(8 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	err = c.Signup(ctx, opts)
 	if err != nil {

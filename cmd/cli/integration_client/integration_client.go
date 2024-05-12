@@ -10,6 +10,7 @@ import (
 
 	"github.com/ezratameno/integration/pkg/gitea"
 	"github.com/ezratameno/integration/pkg/integration"
+	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -29,6 +30,10 @@ func run(ctx context.Context) error {
 		return createCmd(ctx, os.Args[2:])
 	case "delete":
 		return deleteCmd(ctx, os.Args[2:])
+
+		// TODO:
+	// case "version":
+
 	default:
 		return fmt.Errorf("bad command")
 	}
@@ -106,7 +111,7 @@ func createCmd(ctx context.Context, args []string) error {
 		})
 	}
 
-	// fmt.Printf("%+v\n", createOpts)
+	fmt.Printf("%+v\n", createOpts)
 
 	giteaOpts := gitea.Opts{
 		Addr:     "http://localhost",
@@ -114,15 +119,31 @@ func createCmd(ctx context.Context, args []string) error {
 		HttpPort: createOpts.GiteaHttpPort,
 	}
 
-	client, err := integration.NewClient(giteaOpts, os.Stdout)
+	log := logrus.New().WithField("service", "cli")
+
+	w := writer{
+		log: log,
+	}
+
+	defer w.Write([]byte("finish"))
+
+	client, err := integration.NewClient(giteaOpts, w)
 	if err != nil {
 		return err
 	}
 
 	_, err = client.Run(ctx, createOpts)
-	// defer cancelFunc()
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+type writer struct {
+	log *logrus.Entry
+}
+
+func (w writer) Write(p []byte) (n int, err error) {
+	w.log.Info(string(p))
+	return 0, nil
 }

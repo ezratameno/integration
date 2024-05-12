@@ -14,6 +14,7 @@ import (
 	"github.com/ezratameno/integration/pkg/flux"
 	"github.com/ezratameno/integration/pkg/gitea"
 	"github.com/ezratameno/integration/pkg/kind"
+	"github.com/fluxcd/kustomize-controller/api/v1beta2"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -118,11 +119,28 @@ func (c *Client) Run(ctx context.Context, opts CreateOpts) (func() error, error)
 		return cancelFunc, err
 	}
 
+	// TODO: build dependency tree of ks and reconcile by the order
+
+	deps, err := c.KsDeps(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to order kustomizations by deps: %w", err)
+	}
+
+	// reconcile by dep
+	for _, dep := range deps {
+		err = c.fluxClient.ReconcileKS(ctx, dep)
+		if err != nil {
+			fmt.Println(err)
+			// return cancelFunc,
+		}
+
+	}
+
 	if len(opts.KustomizationsToWaitFor) > 0 {
 		fmt.Fprintln(c.out, "waiting for kustomizations to be ready")
 	}
 
-	err = c.fluxClient.WaitForKs(ctx, opts.KustomizationsToWaitFor...)
+	err = c.WaitForKs(ctx, opts.KustomizationsToWaitFor...)
 	if err != nil {
 		return cancelFunc, fmt.Errorf("failed to wait for kustomizations: %w", err)
 	}
@@ -351,6 +369,80 @@ func (c *Client) SetUpGitea(ctx context.Context, opts CreateOpts) (string, error
 	fmt.Fprintln(c.out, "finish setting up gitea")
 
 	return containerName, nil
+}
+
+// KsDeps return the kustomizations by order of deps
+func (c *Client) KsDeps(ctx context.Context) ([]types.NamespacedName, error) {
+
+	kss, err := c.fluxClient.ListKs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	deps := organizeKsByDeps(kss)
+
+	return deps, nil
+}
+
+func organizeKsByDeps(kss []v1beta2.Kustomization) []types.NamespacedName {
+	deps := make(map[types.NamespacedName][]types.NamespacedName)
+
+	// collect on which ks the our ks is depends on
+	for _, ks := range kss {
+		ksInfo := types.NamespacedName{
+			Namespace: ks.Namespace,
+			Name:      ks.Name,
+		}
+		for _, d := range ks.Spec.DependsOn {
+
+			deps[ksInfo] = append(deps[ksInfo], types.NamespacedName{
+				Namespace: ks.Namespace,
+				Name:      d.Name,
+			})
+		}
+	}
+
+	var res []types.NamespacedName
+
+	// for each dependency of the kustomization get their dependencies
+	for k := range deps {
+		Dependencies(deps, &res, k)
+		res = append(res, k)
+	}
+
+	res = removeDuplicate(res)
+
+	fmt.Println(res)
+	return res
+}
+
+func removeDuplicate[T comparable](sliceList []T) []T {
+	allKeys := make(map[T]bool)
+	list := []T{}
+	for _, item := range sliceList {
+		if _, value := allKeys[item]; !value {
+			allKeys[item] = true
+			list = append(list, item)
+		}
+	}
+	return list
+}
+
+// Dependencies returns the order of the dependencies
+func Dependencies(deps map[types.NamespacedName][]types.NamespacedName, res *[]types.NamespacedName, ks types.NamespacedName) {
+
+	// if there is no deps then we stop
+	if len(deps[ks]) == 0 {
+		return
+	}
+
+	ksDeps := deps[ks]
+
+	for _, k := range ksDeps {
+		Dependencies(deps, res, k)
+		*res = append(*res, k)
+	}
+
 }
 
 func (c *Client) WaitForKs(ctx context.Context, kss ...types.NamespacedName) error {
