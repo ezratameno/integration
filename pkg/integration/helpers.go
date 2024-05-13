@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"strings"
 )
 
 // Get preferred outbound ip of this machine
@@ -36,12 +37,25 @@ func validateCreateOpts(opts *CreateOpts) error {
 		opts.GiteaPassword = "adminlabuser"
 	}
 
-	if opts.GiteaRepoName == "" {
-		opts.GiteaRepoName = "test"
+	if len(opts.GiteaLocalRepoPaths) == 0 {
+		return fmt.Errorf("local repo path is required")
 	}
 
-	if opts.GiteaLocalRepoPath == "" {
-		return fmt.Errorf("local repo path is required")
+	if opts.FluxBootstrapRepo == "" {
+		return fmt.Errorf("flux bootstrap repo is required")
+	}
+
+	// TODO: check if the flux repo is in the list of local repos
+	var fluxPathInLocalRepos bool
+
+	for _, p := range opts.GiteaLocalRepoPaths {
+		if strings.Contains(p, opts.FluxBootstrapRepo) {
+			fluxPathInLocalRepos = true
+		}
+	}
+
+	if !fluxPathInLocalRepos {
+		return fmt.Errorf("flux bootstrap repo must be in the local repos")
 	}
 
 	// TODO: maybe generate a rand number so we can run multiple env?

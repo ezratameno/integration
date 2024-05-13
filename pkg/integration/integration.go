@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 	"sync"
 
@@ -75,11 +76,11 @@ type CreateOpts struct {
 	// Gitea password of the user to create as admin
 	GiteaPassword string
 
-	// Repo name to create
-	GiteaRepoName string
-
 	// Path to a local repo which be uploaded to the new gitea repo
-	GiteaLocalRepoPath string
+	GiteaLocalRepoPaths []string
+
+	// The name of the repo we should bootstrap flux with, should be on of the path in GiteaLocalRepoPaths
+	FluxBootstrapRepo string
 
 	// PrivateKeyPath where to save private key
 	PrivateKeyPath string
@@ -259,14 +260,16 @@ func (c *Client) StartEnv(ctx context.Context, opts CreateOpts) (func() error, e
 		return cancelFuncs.CancelFunc(), err
 	}
 
+	repoName := path.Base(opts.FluxBootstrapRepo)
 	bootstrapOpts := flux.BootstrapOpts{
 		PrivateKeyPath: opts.PrivateKeyPath,
 		Branch:         "main",
 		Path:           opts.FluxPath,
 		Password:       opts.GiteaPassword,
 		Username:       opts.GiteaUsername,
-		Url:            fmt.Sprintf("localhost:%d/%s/%s.git", opts.GiteaSshPort, opts.GiteaUsername, opts.GiteaRepoName),
-		GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), opts.GiteaHttpPort, opts.GiteaUsername, opts.GiteaRepoName),
+		HttpPort:       opts.GiteaHttpPort,
+		Url:            fmt.Sprintf("localhost:%d/%s/%s.git", opts.GiteaSshPort, opts.GiteaUsername, repoName),
+		GitRepoUrl:     fmt.Sprintf("http://%s:%d/%s/%s.git", ip.String(), opts.GiteaHttpPort, opts.GiteaUsername, repoName),
 	}
 
 	err = c.fluxClient.Bootstrap(ctx, bootstrapOpts)
@@ -351,19 +354,33 @@ func (c *Client) SetUpGitea(ctx context.Context, opts CreateOpts) (string, error
 		return containerName, fmt.Errorf("failed to start gitea: %w", err)
 	}
 
-	_, err = c.giteaClient.GeneratePrivatePublicKeys(opts.GiteaRepoName, opts.PrivateKeyPath)
+	_, err = c.giteaClient.GeneratePrivatePublicKeys("test", opts.PrivateKeyPath)
 	if err != nil {
 		return containerName, fmt.Errorf("failed to generate public and private keys: %w", err)
 	}
 
-	repoOpts := giteasdk.CreateRepoOption{
-		Name:       opts.GiteaRepoName,
-		TrustModel: giteasdk.TrustModelCollaboratorCommitter,
+	errCh := make(chan error)
+	defer close(errCh)
+	for _, repoPath := range opts.GiteaLocalRepoPaths {
+		go func(clinet *Client, repoPath string) {
+
+			repoName := path.Base(repoPath)
+			repoOpts := giteasdk.CreateRepoOption{
+				Name:       repoName,
+				TrustModel: giteasdk.TrustModelCollaboratorCommitter,
+			}
+
+			_, err = c.giteaClient.CreateRepoFromExisting(ctx, repoOpts, repoPath)
+			errCh <- err
+		}(c, repoPath)
+
 	}
 
-	_, err = c.giteaClient.CreateRepoFromExisting(ctx, repoOpts, opts.GiteaLocalRepoPath)
-	if err != nil {
-		return containerName, fmt.Errorf("failed to create gitea repo with local repo files: %w", err)
+	for i := 0; i < len(opts.GiteaLocalRepoPaths); i++ {
+		err := <-errCh
+		if err != nil {
+			return containerName, fmt.Errorf("failed to create gitea repo with local repo files: %w", err)
+		}
 	}
 
 	fmt.Fprintln(c.out, "finish setting up gitea")

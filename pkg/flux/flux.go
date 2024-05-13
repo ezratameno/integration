@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 	"time"
 
@@ -20,14 +21,20 @@ import (
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/tools/cache"
 )
 
 type Client struct {
 	kubeClient client.Client
 	out        io.Writer
+	dy         *dynamic.DynamicClient
 }
 
 func NewClient(out io.Writer) (*Client, error) {
@@ -46,6 +53,7 @@ type BootstrapOpts struct {
 	Password       string
 	Username       string
 	Url            string
+	HttpPort       int
 
 	// url to update the gitrepo object
 	GitRepoUrl string
@@ -67,6 +75,13 @@ func (c *Client) Initialize() error {
 	}
 
 	c.kubeClient = kubeClient
+
+	dy, err := dynamic.NewForConfig(ctrl.GetConfigOrDie())
+	if err != nil {
+		return err
+	}
+
+	c.dy = dy
 	return nil
 }
 
@@ -76,6 +91,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	if err != nil {
 		return err
 	}
+
 	cmd := fmt.Sprintf(`flux bootstrap git --url="ssh://git@%s" --branch="%s" --private-key-file="%s" --path="%s" --password="%s" --username="%s" --token-auth=true`,
 		opts.Url, opts.Branch, opts.PrivateKeyPath, opts.Path, opts.Password, opts.Username)
 
@@ -117,22 +133,7 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	}
 
 	fmt.Fprintln(c.out, "finish flux bootstrap")
-
-	// TODO: maybe i need to use informers? or one time is enough?
-	// Update the url
-	gitRepo := &sourcev1.GitRepository{}
-	c.kubeClient.Get(ctx, types.NamespacedName{
-		Namespace: "flux-system",
-		Name:      "flux-system",
-	}, gitRepo)
-
-	// TODO: improve this, maybe it's too specific?
-	gitRepo.Spec.URL = opts.GitRepoUrl
-
-	err = c.kubeClient.Patch(ctx, gitRepo, client.Merge, &client.PatchOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to patch changes: %w", err)
-	}
+	go c.KSInformer(ctx, opts.Username, opts.HttpPort)
 
 	// Wait until git repo is in status ready
 
@@ -148,6 +149,90 @@ func (c *Client) Bootstrap(ctx context.Context, opts BootstrapOpts) error {
 	}
 
 	return nil
+}
+
+func (c *Client) KSInformer(ctx context.Context, username string, httpPort int) error {
+
+	dinfomer := dynamicinformer.NewDynamicSharedInformerFactory(c.dy, 2*time.Second).ForResource(schema.GroupVersionResource{
+		Group:    "source.toolkit.fluxcd.io",
+		Version:  "v1beta2",
+		Resource: "gitrepositories",
+	})
+
+	ksInformer := dinfomer.Informer()
+
+	ksInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			u, ok := obj.(*unstructured.Unstructured)
+			if !ok {
+				return
+			}
+
+			var gitRepo sourcev1.GitRepository
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.UnstructuredContent(), &gitRepo)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			err = c.updateGitRepo(ctx, gitRepo, username, httpPort)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			u, ok := newObj.(*unstructured.Unstructured)
+			if !ok {
+				return
+			}
+
+			var gitRepo sourcev1.GitRepository
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.UnstructuredContent(), &gitRepo)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			err = c.updateGitRepo(ctx, gitRepo, username, httpPort)
+			if err != nil {
+				fmt.Println(err)
+			}
+		},
+	})
+
+	ksInformer.Run(ctx.Done())
+
+	return nil
+}
+
+// updateGitRepo updates the gitrepo url and branch so we can use it
+func (c *Client) updateGitRepo(ctx context.Context, gitRepo sourcev1.GitRepository, username string, httpPort int) error {
+
+	// Check if we need to update
+
+	ip, err := getOutboundIP()
+	if err != nil {
+		return err
+	}
+	if strings.Contains(gitRepo.Spec.URL, ip.String()) {
+		return nil
+	}
+
+	repoName := path.Base(gitRepo.Spec.URL)
+
+	gitRepo.Spec.URL = fmt.Sprintf("http://%s:%d/%s/%s", ip.String(), httpPort, username, repoName)
+	gitRepo.Spec.Reference.Branch = "main"
+	err = c.kubeClient.Patch(ctx, &gitRepo, client.Merge, &client.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to patch changes: %w", err)
+	}
+
+	fmt.Printf("update %s url\n", repoName)
+
+	return nil
+
 }
 
 // WaitForKs wait for the kustomization to be ready

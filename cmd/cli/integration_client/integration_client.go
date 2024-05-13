@@ -68,7 +68,8 @@ func createCmd(ctx context.Context, args []string) error {
 	f := flag.NewFlagSet("c", flag.ContinueOnError)
 	f.IntVar(&createOpts.GiteaHttpPort, "http-port", 3000, "gitea http port")
 	f.IntVar(&createOpts.GiteaSshPort, "ssh-port", 2222, "gitea ssh port")
-	f.StringVar(&createOpts.GiteaLocalRepoPath, "local-repo", "", "path to a local git repo")
+	localRepoPaths := f.String("local-repos", "", "comma separated list of paths to local git repos which are in use by flux")
+	f.StringVar(&createOpts.FluxBootstrapRepo, "flux-bootstrap", "", "path to local git repo to bootstrap flux with")
 	f.StringVar(&createOpts.FluxPath, "flux-path", "", "path to bootstrap flux with within the local git repo")
 	f.StringVar(&createOpts.KindConfigPath, "kind-config", "", "path to kind cluster config")
 	f.StringVar(&createOpts.KindClusterName, "cluster", "integration", "the name of the kind cluster to be created")
@@ -93,6 +94,10 @@ func createCmd(ctx context.Context, args []string) error {
 
 	if !(len(strings.Split(*manifests, ",")) == 1 && strings.Split(*manifests, ",")[0] == "") {
 		createOpts.ManifestsToApply = strings.Split(*manifests, ",")
+	}
+
+	if !(len(strings.Split(*localRepoPaths, ",")) == 1 && strings.Split(*localRepoPaths, ",")[0] == "") {
+		createOpts.GiteaLocalRepoPaths = strings.Split(*localRepoPaths, ",")
 	}
 
 	for _, ks := range strings.Split(*kustomizations, ",") {

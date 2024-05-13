@@ -9,11 +9,12 @@ tidy:
 	go mod tidy
 
 
-Cluster="test23"
+Cluster="test1"
 run: pull-images
 	@go run ./cmd/cli/integration_client/ create --kustomizations flux-system/apps  \
 	--cluster ${Cluster} \
-	--local-repo ~/etameno/Desktop/github/habana-k8s-infra-services \
+	--local-repos /home/etameno/etameno/Desktop/github/habana-k8s-infra-services,/home/etameno/etameno/Desktop/github/local-path-provisioner-internal \
+	--flux-bootstrap ~/etameno/Desktop/github/habana-k8s-infra-services \
 	--flux-path flux/clusters/dc02 \
 	--manifests https://raw.githubusercontent.com/kubernetes-sigs/scheduler-plugins/release-1.23/manifests/capacityscheduling/crd.yaml \
 	--kind-config /home/etameno/etameno/Desktop/github/habana-k8s-infra-services/test/kind-cluster/kind-cluster.yaml \
